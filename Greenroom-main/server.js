@@ -7,6 +7,7 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import * as aiEngine from "./aiEngine.js";
 import * as dbService from "./dbService.js";
+import embeddedQuestionBank from "./data/question_bank_data.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -36,19 +37,68 @@ async function evaluateWithPythonOrJs(question, answer, duration, persona, langu
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+function getFrontendDir() {
+  const candidates = [
+    path.join(__dirname, "frontend"),
+    path.join(process.cwd(), "frontend"),
+    path.join(process.cwd(), "Greenroom-main", "frontend"),
+    path.join(__dirname, "..", "frontend")
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  return path.join(__dirname, "frontend");
+}
+
 const app = express();
 const PORT = 3000;
-const FRONTEND_DIR = path.join(__dirname, "frontend");
+const FRONTEND_DIR = getFrontendDir();
 
 app.use(cors());
 app.use(express.json());
 
+// API route normalizer: handles serverless environments where /api prefix may be stripped or present
+app.use((req, res, next) => {
+  if (!req.url.startsWith("/api") && (
+    req.url.startsWith("/companies") ||
+    req.url.startsWith("/company") ||
+    req.url.startsWith("/questions") ||
+    req.url.startsWith("/evaluate") ||
+    req.url.startsWith("/report") ||
+    req.url.startsWith("/benchmark") ||
+    req.url.startsWith("/db") ||
+    req.url.startsWith("/auth")
+  )) {
+    req.url = "/api" + req.url;
+  }
+  next();
+});
+
 // Initialize question bank with gold standard model answers
 dbService.initQuestionBank().catch(err => console.warn("Background DB init note:", err.message));
 
-// Load Question Bank
-const qbRaw = fs.readFileSync(path.join(__dirname, "data", "question_bank.json"), "utf-8");
-const QUESTION_BANK = JSON.parse(qbRaw).companies;
+// Load Question Bank with multi-tier resilient fallback
+let QUESTION_BANK = embeddedQuestionBank?.companies || [];
+try {
+  const qbCandidates = [
+    path.join(__dirname, "data", "question_bank.json"),
+    path.join(process.cwd(), "data", "question_bank.json"),
+    path.join(process.cwd(), "Greenroom-main", "data", "question_bank.json"),
+    path.join(__dirname, "..", "data", "question_bank.json")
+  ];
+  for (const qbPath of qbCandidates) {
+    if (fs.existsSync(qbPath)) {
+      const qbRaw = fs.readFileSync(qbPath, "utf-8");
+      const parsed = JSON.parse(qbRaw);
+      if (parsed.companies && parsed.companies.length) {
+        QUESTION_BANK = parsed.companies;
+        break;
+      }
+    }
+  }
+} catch (err) {
+  console.warn("Using embedded question bank fallback:", err.message);
+}
 const COMPANY_INDEX = new Map(QUESTION_BANK.map(c => [c.id, c]));
 
 const CULTURE_BRIEFS = {
@@ -602,14 +652,42 @@ app.use(express.static(FRONTEND_DIR));
 
 // Fallback to index.html for SPA
 app.get("*", (req, res) => {
+  if (req.path.startsWith("/api/")) {
+    return res.status(404).json({ error: "API route not found" });
+  }
   const indexPath = path.join(FRONTEND_DIR, "index.html");
   if (fs.existsSync(indexPath)) {
     res.sendFile(indexPath);
   } else {
-    res.status(404).send("Not found");
+    res.status(404).send("GreenRoom UI not found");
   }
 });
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`GreenRoom server running on http://0.0.0.0:${PORT}`);
+// Global Express Error Handler
+app.use((err, req, res, next) => {
+  console.error("Unhandled server error:", err);
+  if (res.headersSent) {
+    return next(err);
+  }
+  res.status(500).json({
+    error: "Internal Server Error",
+    message: process.env.NODE_ENV === "production" ? "An unexpected error occurred" : err.message
+  });
 });
+
+const isServerless = Boolean(
+  process.env.VERCEL ||
+  process.env.NOW_REGION ||
+  process.env.AWS_LAMBDA_FUNCTION_NAME ||
+  process.env.LAMBDA_TASK_ROOT
+);
+
+const isMain = process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+
+if (isMain && !isServerless) {
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`GreenRoom server running on http://0.0.0.0:${PORT}`);
+  });
+}
+
+export default app;

@@ -1,0 +1,11 @@
+{
+  "name": "GreenRoom",
+  "description": "AI-powered interview simulator. Pick a company, face real questions, get scored like a real interviewer scored you.",
+  "requestFramePermissions": [
+    "microphone",
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
