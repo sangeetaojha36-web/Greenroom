@@ -749,16 +749,22 @@ app.get("/api/auth/me", async (req, res) => {
   }
 });
 
-app.get("/api/db/status", (req, res) => {
-  res.json({
-    status: "connected",
-    database: "Firebase Cloud Firestore",
-    database_id: "ai-studio-aiinterviewer-c21e2258-b44a-4995-8291-4eceeee270e2",
-    collections: ["questions", "users", "interviews", "responses"],
-    cached_questions: dbService.cache.questions.size,
-    cached_interviews: dbService.cache.interviews.size,
-    cached_users: dbService.cache.users.size
-  });
+app.get("/api/db/status", async (req, res) => {
+  try {
+    const liveTest = await dbService.testDatabaseConnection();
+    res.json({
+      status: liveTest.ok ? "connected" : "degraded",
+      database: "Firebase Cloud Firestore",
+      database_id: "ai-studio-aiinterviewer-c21e2258-b44a-4995-8291-4eceeee270e2",
+      live_check: liveTest,
+      collections: ["questions", "users", "interviews", "responses"],
+      cached_questions: dbService.cache.questions.size,
+      cached_interviews: dbService.cache.interviews.size,
+      cached_users: dbService.cache.users.size
+    });
+  } catch (err) {
+    res.status(500).json({ status: "error", error: err.message });
+  }
 });
 
 // ---------------------------------------------------------------------------

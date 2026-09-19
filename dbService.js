@@ -2,6 +2,17 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { fileURLToPath } from "url";
+import { initializeApp, getApps, getApp } from "firebase/app";
+import {
+  getFirestore,
+  doc,
+  setDoc,
+  getDoc,
+  collection,
+  getDocs,
+  limit as firestoreLimit,
+  query as firestoreQuery
+} from "firebase/firestore";
 import embeddedQuestionBank from "./data/question_bank_data.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -30,6 +41,19 @@ const PROJECT_ID = firebaseConfig?.projectId || process.env.FIREBASE_PROJECT_ID 
 const DATABASE_ID = firebaseConfig?.firestoreDatabaseId || "(default)";
 const API_KEY = firebaseConfig?.apiKey || process.env.FIREBASE_API_KEY || "";
 const FIRESTORE_BASE_URL = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/${DATABASE_ID}/documents`;
+
+// Initialize official Firebase App and Cloud Firestore instance
+let firebaseApp = null;
+export let firestoreDb = null;
+if (firebaseConfig && (firebaseConfig.apiKey || process.env.FIREBASE_API_KEY)) {
+  try {
+    firebaseApp = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+    firestoreDb = getFirestore(firebaseApp, DATABASE_ID);
+    console.log(`[Firebase] Successfully connected to Cloud Firestore database: ${DATABASE_ID}`);
+  } catch (err) {
+    console.warn("[Firebase] Initialization error:", err.message);
+  }
+}
 
 // In-memory fallback caches
 const cache = {
@@ -107,80 +131,100 @@ export function fromFirestoreDoc(doc) {
 }
 
 /* -------------------------------------------------------------------------
-   Generic REST Operations to Firestore
+   Firestore Database Operations with In-Memory Caching
    ------------------------------------------------------------------------- */
-export async function firestoreSetDoc(collection, docId, data) {
+export async function firestoreSetDoc(collectionName, docId, data) {
   // Always update in-memory cache first
-  const collectionMap = cache[collection] || (cache[collection] = new Map());
+  const collectionMap = cache[collectionName] || (cache[collectionName] = new Map());
   collectionMap.set(docId, { ...data, id: docId });
 
-  if (!PROJECT_ID || !API_KEY) return { ...data, id: docId };
-
-  try {
-    const url = `${FIRESTORE_BASE_URL}/${collection}/${encodeURIComponent(docId)}?key=${API_KEY}`;
-    const res = await fetch(url, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ fields: toFirestoreFields(data) })
-    });
-    if (!res.ok) {
-      const errTxt = await res.text();
-      console.warn(`Firestore setDoc error on ${collection}/${docId}:`, res.status, errTxt);
+  if (firestoreDb) {
+    try {
+      const docRef = doc(firestoreDb, collectionName, docId);
+      await setDoc(docRef, data, { merge: true });
+      return { ...data, id: docId };
+    } catch (err) {
+      console.warn(`Firestore setDoc error on ${collectionName}/${docId}:`, err.message);
     }
-    return { ...data, id: docId };
-  } catch (err) {
-    console.warn(`Firestore network error on setDoc ${collection}/${docId}:`, err.message);
-    return { ...data, id: docId };
   }
+
+  return { ...data, id: docId };
 }
 
-export async function firestoreGetDoc(collection, docId) {
-  const collectionMap = cache[collection];
+export async function firestoreGetDoc(collectionName, docId) {
+  const collectionMap = cache[collectionName];
   if (collectionMap && collectionMap.has(docId)) {
     return collectionMap.get(docId);
   }
 
-  if (!PROJECT_ID || !API_KEY) return null;
-
-  try {
-    const url = `${FIRESTORE_BASE_URL}/${collection}/${encodeURIComponent(docId)}?key=${API_KEY}`;
-    const res = await fetch(url);
-    if (res.status === 404) return null;
-    if (!res.ok) return null;
-    const doc = await res.json();
-    const parsed = fromFirestoreDoc(doc);
-    if (collectionMap && parsed) {
-      collectionMap.set(docId, parsed);
+  if (firestoreDb) {
+    try {
+      const docRef = doc(firestoreDb, collectionName, docId);
+      const snap = await getDoc(docRef);
+      if (snap.exists()) {
+        const item = { ...snap.data(), id: snap.id };
+        if (collectionMap) collectionMap.set(docId, item);
+        return item;
+      }
+      return null;
+    } catch (err) {
+      console.warn(`Firestore getDoc error on ${collectionName}/${docId}:`, err.message);
     }
-    return parsed;
-  } catch (err) {
-    console.warn(`Firestore network error on getDoc ${collection}/${docId}:`, err.message);
-    return collectionMap ? collectionMap.get(docId) || null : null;
   }
+
+  return collectionMap ? collectionMap.get(docId) || null : null;
 }
 
-export async function firestoreListDocs(collection, limit = 50) {
-  if (!PROJECT_ID || !API_KEY) {
-    return Array.from(cache[collection]?.values() || []).slice(0, limit);
+export async function firestoreListDocs(collectionName, limitCount = 50) {
+  if (firestoreDb) {
+    try {
+      const q = firestoreQuery(collection(firestoreDb, collectionName), firestoreLimit(limitCount));
+      const snap = await getDocs(q);
+      const docs = snap.docs.map(d => ({ ...d.data(), id: d.id }));
+      const collectionMap = cache[collectionName] || (cache[collectionName] = new Map());
+      docs.forEach(d => {
+        if (d && d.id) collectionMap.set(d.id, d);
+      });
+      return docs;
+    } catch (err) {
+      console.warn(`Firestore list error for ${collectionName}:`, err.message);
+    }
   }
 
+  return Array.from(cache[collectionName]?.values() || []).slice(0, limitCount);
+}
+
+export async function testDatabaseConnection() {
+  if (!firestoreDb) {
+    return {
+      ok: false,
+      mode: "in_memory_cache",
+      error: "Cloud Firestore not initialized (missing config or key)"
+    };
+  }
   try {
-    const url = `${FIRESTORE_BASE_URL}/${collection}?pageSize=${limit}&key=${API_KEY}`;
-    const res = await fetch(url);
-    if (!res.ok) {
-      return Array.from(cache[collection]?.values() || []).slice(0, limit);
-    }
-    const data = await res.json();
-    const docs = (data.documents || []).map(fromFirestoreDoc);
-    // Update local cache
-    const collectionMap = cache[collection] || (cache[collection] = new Map());
-    docs.forEach(d => {
-      if (d && d.id) collectionMap.set(d.id, d);
-    });
-    return docs;
+    const testDocId = "conn_check_" + Date.now();
+    const testRef = doc(firestoreDb, "_healthcheck", testDocId);
+    const payload = {
+      test: true,
+      timestamp: new Date().toISOString(),
+      agent: "Greenroom AI Interviewer Diagnostics"
+    };
+    await setDoc(testRef, payload);
+    const snap = await getDoc(testRef);
+    return {
+      ok: snap.exists(),
+      mode: "cloud_firestore",
+      database_id: DATABASE_ID,
+      project_id: PROJECT_ID,
+      verified_doc: snap.data()
+    };
   } catch (err) {
-    console.warn(`Firestore list error for ${collection}:`, err.message);
-    return Array.from(cache[collection]?.values() || []).slice(0, limit);
+    return {
+      ok: false,
+      mode: "in_memory_fallback",
+      error: err.message
+    };
   }
 }
 
@@ -567,7 +611,7 @@ export async function getUserProfile(userId = "default_user") {
 }
 
 export async function saveUserProfile(userData) {
-  const userId = userData.id || userData.userId || "default_user";
+  const userId = userData.id || userData.userId || userData.user_id || "default_user";
   const existing = (await firestoreGetDoc("users", userId)) || {};
   const merged = {
     ...existing,
