@@ -23,7 +23,7 @@ const state = {
   customBanks: [],
   activeCompany: null,
   selectedRole: null,
-  selectedLevel: "mid",
+  selectedLevel: "junior",
   cameraStream: null,
   cameraGranted: false,
   cameraFlipped: false,
@@ -1288,11 +1288,349 @@ async function beginInterview(){
 }
 
 /* -------------------------------------------------------------------------
+   AI Behavior & Anti-Cheating Tracking Engine
+   ------------------------------------------------------------------------- */
+const behaviorTracker = {
+  active: false,
+  intervalId: null,
+  totalFrames: 0,
+  eyeContactFrames: 0,
+  gazeAwayCount: 0,
+  gazeDownCount: 0,
+  faceAbsentFrames: 0,
+  multipleFacesDetected: false,
+  tabSwitches: 0,
+  blurCount: 0,
+  pasteAnomalies: 0,
+  consecutiveAway: 0,
+  consecutiveDown: 0,
+  _bound: false,
+  _alertTimer: null,
+
+  resetForQuestion() {
+    this.totalFrames = 0;
+    this.eyeContactFrames = 0;
+    this.gazeAwayCount = 0;
+    this.gazeDownCount = 0;
+    this.faceAbsentFrames = 0;
+    this.multipleFacesDetected = false;
+    this.tabSwitches = 0;
+    this.pasteAnomalies = 0;
+    this.consecutiveAway = 0;
+    this.consecutiveDown = 0;
+    this.updateHUD({
+      eyeContact: 98,
+      gazeDirection: "focused"
+    });
+  },
+
+  start() {
+    if (this.active) return;
+    this.active = true;
+    if (this.intervalId) clearInterval(this.intervalId);
+    this.intervalId = setInterval(() => this.analyzeFrame(), 380);
+    this.bindWindowEvents();
+  },
+
+  stop() {
+    this.active = false;
+    if (this.intervalId) {
+      clearInterval(this.intervalId);
+      this.intervalId = null;
+    }
+    this.unbindWindowEvents();
+  },
+
+  bindWindowEvents() {
+    if (this._bound) return;
+    this._bound = true;
+
+    this._onVisibilityChange = () => {
+      if (document.hidden && $("#screen-2")?.classList.contains("active")) {
+        this.tabSwitches++;
+        this.showAlert("⚠️ Anti-Cheat: Tab switch detected! Please stay focused on the interview.");
+        this.updateHUD();
+      }
+    };
+    document.addEventListener("visibilitychange", this._onVisibilityChange);
+
+    this._onBlur = () => {
+      if ($("#screen-2")?.classList.contains("active")) {
+        this.blurCount++;
+      }
+    };
+    window.addEventListener("blur", this._onBlur);
+
+    const answerEl = $("#answerInput");
+    if (answerEl) {
+      this._onPaste = (e) => {
+        const text = (e.clipboardData || window.clipboardData)?.getData("text") || "";
+        if (text.length > 80) {
+          this.pasteAnomalies++;
+          this.showAlert("⚠️ Notice: Large clipboard paste detected.");
+          this.updateHUD();
+        }
+      };
+      answerEl.addEventListener("paste", this._onPaste);
+    }
+  },
+
+  unbindWindowEvents() {
+    if (!this._bound) return;
+    this._bound = false;
+    document.removeEventListener("visibilitychange", this._onVisibilityChange);
+    window.removeEventListener("blur", this._onBlur);
+    const answerEl = $("#answerInput");
+    if (answerEl && this._onPaste) {
+      answerEl.removeEventListener("paste", this._onPaste);
+    }
+  },
+
+  showAlert(msg) {
+    const alertEl = $("#hudProctorAlert");
+    if (!alertEl) return;
+    alertEl.textContent = msg;
+    alertEl.style.display = "block";
+    clearTimeout(this._alertTimer);
+    this._alertTimer = setTimeout(() => {
+      alertEl.style.display = "none";
+    }, 4500);
+  },
+
+  analyzeFrame() {
+    const video = $("#candidateWebcam");
+    const canvas = $("#behaviorCanvas");
+    if (!video || !canvas || video.readyState < 2) return;
+
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return;
+
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    let imgData;
+    try {
+      imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    } catch(e) {
+      return;
+    }
+    const data = imgData.data;
+
+    let skinPixelCount = 0;
+    let sumX = 0;
+    let sumY = 0;
+    const step = 4;
+
+    for (let i = 0; i < data.length; i += 4 * step) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+
+      const isSkin = (r > 60 && g > 40 && b > 20) &&
+                     (Math.max(r, g, b) - Math.min(r, g, b) > 15) &&
+                     (Math.abs(r - g) > 15) && (r > g) && (r > b);
+
+      if (isSkin) {
+        skinPixelCount++;
+        const pixelIdx = i / 4;
+        const x = pixelIdx % canvas.width;
+        const y = Math.floor(pixelIdx / canvas.width);
+        sumX += x;
+        sumY += y;
+      }
+    }
+
+    this.totalFrames++;
+    const minFacePixels = (canvas.width * canvas.height) / (step * 25);
+    let gazeDirection = "focused";
+
+    if (skinPixelCount < minFacePixels) {
+      this.faceAbsentFrames++;
+      gazeDirection = "absent";
+    } else {
+      const avgX = sumX / skinPixelCount;
+      const avgY = sumY / skinPixelCount;
+      const normX = avgX / canvas.width;
+      const normY = avgY / canvas.height;
+
+      if (normX < 0.28 || normX > 0.72) {
+        gazeDirection = "away";
+        this.consecutiveAway++;
+        if (this.consecutiveAway === 4) {
+          this.gazeAwayCount++;
+          this.showAlert("⚠️ Anti-Cheat: Looking away from interviewer.");
+        }
+      } else if (normY > 0.68) {
+        gazeDirection = "down";
+        this.consecutiveDown++;
+        if (this.consecutiveDown === 4) {
+          this.gazeDownCount++;
+          this.showAlert("⚠️ Notice: Head tilted down (desk/phone inspection).");
+        }
+      } else {
+        this.consecutiveAway = 0;
+        this.consecutiveDown = 0;
+        this.eyeContactFrames++;
+      }
+    }
+
+    this.updateHUD({ gazeDirection });
+  },
+
+  updateHUD(custom = {}) {
+    const eyeDot = $("#hudEyeDot");
+    const eyeText = $("#hudEyeText");
+    const faceDot = $("#hudFaceDot");
+    const faceText = $("#hudFaceText");
+    const antiCheatText = $("#hudAntiCheatText");
+    const antiCheatPill = $("#hudAntiCheatPill");
+    const candScoreTag = $("#candBehaviorScoreTag");
+
+    const ratio = this.totalFrames > 0
+      ? Math.round((this.eyeContactFrames / this.totalFrames) * 100)
+      : (custom.eyeContact ?? 98);
+
+    const gaze = custom.gazeDirection || "focused";
+
+    if (eyeDot && eyeText) {
+      if (gaze === "away") {
+        eyeDot.className = "hud-dot warn";
+        eyeText.textContent = `Eye: Looking Away (${ratio}%)`;
+      } else if (gaze === "down") {
+        eyeDot.className = "hud-dot warn";
+        eyeText.textContent = `Eye: Looking Down (${ratio}%)`;
+      } else if (gaze === "absent") {
+        eyeDot.className = "hud-dot danger";
+        eyeText.textContent = `Eye: Out of Frame`;
+      } else {
+        eyeDot.className = "hud-dot good";
+        eyeText.textContent = `Eye: ${Math.max(70, ratio)}% Focused`;
+      }
+    }
+
+    if (faceDot && faceText) {
+      if (gaze === "absent") {
+        faceDot.className = "hud-dot danger";
+        faceText.textContent = `👤 No Face`;
+      } else if (gaze === "away" || gaze === "down") {
+        faceDot.className = "hud-dot warn";
+        faceText.textContent = `👤 Shifted`;
+      } else {
+        faceDot.className = "hud-dot good";
+        faceText.textContent = `👤 Centered`;
+      }
+    }
+
+    if (antiCheatText && antiCheatPill) {
+      if (this.tabSwitches > 0) {
+        antiCheatPill.className = "hud-pill danger";
+        antiCheatText.textContent = `Flagged (${this.tabSwitches} Tab${this.tabSwitches > 1 ? "s" : ""})`;
+      } else {
+        antiCheatPill.className = "hud-pill";
+        antiCheatText.textContent = `Verified (0 Tabs)`;
+      }
+    }
+
+    if (candScoreTag) {
+      const deductions = (this.tabSwitches * 14) + (this.gazeAwayCount * 3) + (this.gazeDownCount * 3);
+      const score = Math.max(50, Math.min(100, Math.round((ratio * 0.4) + ((100 - deductions) * 0.6))));
+      candScoreTag.textContent = `Composure: ${score}%`;
+      candScoreTag.style.color = score >= 80 ? "var(--signal)" : score >= 65 ? "var(--spotlight)" : "var(--cue)";
+    }
+  },
+
+  getReportData() {
+    const ratio = this.totalFrames > 0
+      ? Math.round((this.eyeContactFrames / this.totalFrames) * 100)
+      : 95;
+    const deductions = (this.tabSwitches * 15) + (this.gazeAwayCount * 3) + (this.gazeDownCount * 3) + (this.pasteAnomalies * 10);
+    const score = Math.max(0, Math.min(100, Math.round((ratio * 0.4) + ((100 - deductions) * 0.6))));
+
+    return {
+      score,
+      eye_contact_ratio: ratio,
+      tab_switches: this.tabSwitches,
+      gaze_away_count: this.gazeAwayCount,
+      gaze_down_count: this.gazeDownCount,
+      multiple_faces_detected: this.multipleFacesDetected,
+      face_absent: this.faceAbsentFrames > (this.totalFrames * 0.2),
+      paste_anomalies: this.pasteAnomalies,
+      blur_count: this.blurCount
+    };
+  }
+};
+
+/* Audio VU Meter */
+let audioMeterContext = null;
+let audioAnalyser = null;
+let audioMeterAnimId = null;
+
+function setupAudioMeter(stream){
+  if (!stream) return;
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    if (!audioMeterContext) {
+      audioMeterContext = new AudioCtx();
+    }
+    if (audioMeterContext.state === "suspended") {
+      audioMeterContext.resume().catch(() => {});
+    }
+    const source = audioMeterContext.createMediaStreamSource(stream);
+    audioAnalyser = audioMeterContext.createAnalyser();
+    audioAnalyser.fftSize = 64;
+    source.connect(audioAnalyser);
+
+    const bars = $$("#audioVuBars .vu-bar");
+    const statusPill = $("#audioStatusPill");
+    const dataArray = new Uint8Array(audioAnalyser.frequencyBinCount);
+
+    function tick() {
+      if (!audioAnalyser) return;
+      audioAnalyser.getByteFrequencyData(dataArray);
+      let sum = 0;
+      for (let i = 0; i < dataArray.length; i++) {
+        sum += dataArray[i];
+      }
+      const avg = sum / dataArray.length;
+      const normalized = Math.min(1, avg / 60);
+
+      if (bars.length) {
+        bars.forEach((bar, idx) => {
+          const factor = (idx + 1) / bars.length;
+          const height = Math.max(3, Math.round(normalized * 14 * (0.6 + 0.4 * factor)));
+          bar.style.height = `${height}px`;
+          bar.style.background = normalized > 0.18 ? "var(--signal)" : "rgba(89,217,196,0.3)";
+        });
+      }
+
+      if (statusPill) {
+        if (normalized > 0.15) {
+          statusPill.textContent = "Speaking…";
+          statusPill.className = "audio-status-pill active";
+        } else {
+          statusPill.textContent = state.isRecording ? "Listening" : "Mic Ready";
+          statusPill.className = "audio-status-pill";
+        }
+      }
+
+      audioMeterAnimId = requestAnimationFrame(tick);
+    }
+    if (audioMeterAnimId) cancelAnimationFrame(audioMeterAnimId);
+    tick();
+  } catch (err) {
+    console.warn("Audio meter setup notice:", err);
+  }
+}
+
+/* -------------------------------------------------------------------------
    Interview Room Logic
    ------------------------------------------------------------------------- */
 function loadQuestion(){
   const q = state.questions[state.currentIndex];
   if (!q){ return finishInterview(); }
+
+  // Start AI behavior & proctoring tracker for this question
+  behaviorTracker.resetForQuestion();
+  behaviorTracker.start();
 
   if (state.selectedFormat === "panel") {
     const panelInterviewer = PANEL_INTERVIEWERS[state.currentIndex % PANEL_INTERVIEWERS.length];
@@ -1314,14 +1652,30 @@ function loadQuestion(){
   $("#questionTag").textContent = (q.type || "general").replace("_", " ").toUpperCase();
   const levelTag = $("#questionLevelTag");
   if (levelTag) {
-    const qLevel = q.level || state.selectedLevel || "mid";
+    const qLevel = q.level || state.selectedLevel || "junior";
     levelTag.textContent = qLevel.toUpperCase();
     levelTag.className = `level-tag ${qLevel}`;
   }
 
+  // Populate Question Simplification & Hints Drawer
+  const hintBox = $("#questionHintBox");
+  if (hintBox) hintBox.style.display = "none";
+  const simpText = $("#hintSimplifiedText");
+  const pointsList = $("#hintPointsList");
+  const starterText = $("#hintStarterText");
+
+  if (simpText) simpText.textContent = q.simplified_prompt || q.q;
+  if (pointsList) {
+    const hints = q.hints || (Array.isArray(q.keywords) ? q.keywords.map(k => `Explain ${k} clearly`) : ["State your core definition", "Walk through a practical step-by-step example", "Mention benefits and trade-offs"]);
+    pointsList.innerHTML = hints.map(h => `<li>${escapeHtml(h)}</li>`).join("");
+  }
+  if (starterText) {
+    starterText.textContent = q.starter_template || `“In simple terms, I approach this by first…”`;
+  }
+
   const candBadge = $("#candidateLevelBadge");
   if (candBadge) {
-    const chosenLevel = state.selectedLevel === "all" ? "ALL-ROUND" : (state.selectedLevel || "MID").toUpperCase();
+    const chosenLevel = state.selectedLevel === "all" ? "ALL-ROUND" : (state.selectedLevel || "JUNIOR").toUpperCase();
     candBadge.textContent = `${chosenLevel} CANDIDATE`;
   }
 
@@ -1331,6 +1685,7 @@ function loadQuestion(){
       candidateCam.srcObject = state.cameraStream;
     }
     candidateCam.play().catch(() => {});
+    setupAudioMeter(state.cameraStream);
   }
 
   $("#qCurrent").textContent = state.currentIndex + 1;
@@ -1392,7 +1747,9 @@ function setupRecognition(){
   const rec = new SR();
   rec.continuous = true;
   rec.interimResults = true;
-  rec.lang = state.selectedLang === "hinglish" ? "hi-IN" : "en-US";
+
+  const accentSelect = $("#speechAccentSelect");
+  rec.lang = accentSelect ? accentSelect.value : (state.selectedLang === "hinglish" ? "hi-IN" : "en-US");
 
   rec.onresult = (e) => {
     let interim = "";
@@ -1406,19 +1763,59 @@ function setupRecognition(){
     $("#answerInput").value = (state.baseTranscript + " " + interim).trim();
     updateLiveMeta();
   };
-  rec.onerror = () => { stopRecording(); };
-  rec.onend = () => { if (state.isRecording) rec.start(); };
+
+  rec.onerror = (e) => {
+    // Ignore no-speech pause: normal conversation has pauses
+    if (e.error === "no-speech") {
+      return;
+    }
+    console.warn("Speech recognition notice:", e.error);
+    if (e.error === "network" || e.error === "aborted") {
+      setTimeout(() => {
+        if (state.isRecording && state.recognition) {
+          try { state.recognition.start(); } catch(_) {}
+        }
+      }, 350);
+      return;
+    }
+    if (e.error === "not-allowed") {
+      toast("Microphone access is required for voice recognition.");
+      stopRecording();
+    }
+  };
+
+  rec.onend = () => {
+    // Keep recognition active while recording state is true
+    if (state.isRecording) {
+      setTimeout(() => {
+        if (state.isRecording && state.recognition) {
+          try {
+            state.recognition.start();
+          } catch(err) {}
+        }
+      }, 150);
+    }
+  };
+
   return rec;
 }
 
 function startRecording(){
+  const accentSelect = $("#speechAccentSelect");
+  if (state.recognition && accentSelect && state.recognition.lang !== accentSelect.value) {
+    state.recognition = null;
+  }
   if (!state.recognition) state.recognition = setupRecognition();
   if (!state.recognition){ toast("Speech recognition isn't supported in this browser — type your answer instead."); return; }
   state.isRecording = true;
   state.baseTranscript = $("#answerInput").value ? $("#answerInput").value + " " : "";
-  state.recognition.start();
+  try {
+    state.recognition.start();
+  } catch(_) {}
   $("#micToggle").classList.add("recording");
   $("#micToggleLabel").textContent = "Listening… tap to stop";
+  const pill = $("#audioStatusPill");
+  if (pill) { pill.textContent = "Listening"; pill.className = "audio-status-pill active"; }
   $("#onAirBadge").classList.add("live");
 }
 
@@ -1427,6 +1824,8 @@ function stopRecording(){
   if (state.recognition){ try{ state.recognition.stop(); }catch(e){} }
   $("#micToggle").classList.remove("recording");
   $("#micToggleLabel").textContent = "Tap mic to speak";
+  const pill = $("#audioStatusPill");
+  if (pill) { pill.textContent = "Mic Ready"; pill.className = "audio-status-pill"; }
 }
 
 /* Submit Answer */
@@ -1438,6 +1837,9 @@ async function submitAnswer(){
   stopRecording();
   clearInterval(state.timerInterval);
   const duration = (Date.now() - state.answerStartTime) / 1000;
+
+  // Retrieve anti-cheating and behavior proctoring metrics
+  const behaviorData = behaviorTracker.getReportData();
 
   $("#submitAnswerBtn").textContent = "Scoring with NLP engine…";
   $("#submitAnswerBtn").disabled = true;
@@ -1451,19 +1853,21 @@ async function submitAnswer(){
         user_id: state.userId,
         question_id: q.id,
         question_text: q.q,
-        level: q.level || state.selectedLevel || "mid",
+        level: q.level || state.selectedLevel || "junior",
         question_type: q.type,
         keywords: q.keywords,
         answer,
         duration_seconds: duration,
         persona: state.selectedPersona,
         language: state.selectedLang,
-        company_id: state.activeCompany?.id || "google"
+        company_id: state.activeCompany?.id || "google",
+        behavior: behaviorData
       })
     });
     const result = await res.json();
     result.question_text = q.q;
     result.candidate_answer = answer;
+    result.behavior = behaviorData;
     state.results.push(result);
 
     recordQuestionResultForSpacedRep(q, result);
@@ -1500,11 +1904,13 @@ function revealScorecard(result){
     $("#scoreNum").textContent = Math.round(counter.v);
   }});
 
+  const behaviorVal = result.behavior ? result.behavior.score : 95;
   const bars = [
     ["Relevance", result.breakdown.relevance],
     ["Structure", result.breakdown.structure.score],
     ["Fluency", result.breakdown.fluency.score],
-    ["Confidence", result.breakdown.confidence.score]
+    ["Confidence", result.breakdown.confidence.score],
+    ["Behavior & Composure", behaviorVal]
   ];
   const barsEl = $("#miniBars");
   barsEl.innerHTML = bars.map(([label, val]) => `
@@ -1624,6 +2030,7 @@ function hideBreathingBreak(){
 }
 
 function finishInterview(){
+  behaviorTracker.stop();
   goToScreen(3, { live: false });
   setTimeout(()=> buildReport(), 650);
 }
@@ -1636,6 +2043,31 @@ function renderReport(report){
   gsap.to(counter, { v: report.overall_average, duration: 1.4, ease:"power2.out", onUpdate: () => {
     $("#reportOverallScore").textContent = Math.round(counter.v);
   }});
+
+  // Render Candidate Behavior & Anti-Cheating Assessment
+  if (report.proctoring) {
+    const proc = report.proctoring;
+    const score = proc.overall_behavior_score ?? proc.behavior_score ?? 90;
+    const badge = $("#reportBehaviorScoreBadge");
+    if (badge) {
+      badge.textContent = `${score}% Composure`;
+      badge.style.color = score >= 80 ? "var(--signal)" : score >= 60 ? "var(--spotlight)" : "var(--cue)";
+    }
+    const eyeEl = $("#reportEyeContactPct");
+    if (eyeEl) eyeEl.textContent = `${proc.avg_eye_contact ?? proc.average_eye_contact ?? 95}%`;
+    const integEl = $("#reportIntegrityRating");
+    if (integEl) integEl.textContent = proc.integrity_status ?? proc.integrity_rating ?? "Verified Clean";
+    const tabEl = $("#reportTabCountSub");
+    if (tabEl) tabEl.textContent = `${proc.total_tab_switches ?? 0} tab switches`;
+    const riskEl = $("#reportCheatRisk");
+    if (riskEl) {
+      const isClean = (proc.total_tab_switches === 0 && (!proc.flags || proc.flags.length === 0));
+      riskEl.textContent = isClean ? "Clean" : "Flagged";
+      riskEl.className = `p-stat-value ${isClean ? 'text-clean' : 'text-flagged'}`;
+    }
+    const sumEl = $("#reportProctorSummaryText");
+    if (sumEl) sumEl.textContent = proc.proctor_verdict ?? proc.summary ?? "Consistently maintained eye contact with interviewer; no external tabs opened or unprompted clipboard paste detected.";
+  }
 
   $("#strongestArea").textContent = report.strongest_area;
   $("#weakestArea").textContent = report.weakest_area;
@@ -1710,7 +2142,7 @@ function drawRadar(radar){
   const ctx = canvas.getContext("2d");
   const labels = Object.keys(radar);
   const values = Object.values(radar);
-  const colors = { Relevance:"#FFB020", Structure:"#59D9C4", Fluency:"#FF9F5A", Confidence:"#8FD9FF" };
+  const colors = { Relevance:"#FFB020", Structure:"#59D9C4", Fluency:"#FF9F5A", Confidence:"#8FD9FF", Behavior:"#59D9C4" };
 
   const cx = canvas.width/2, cy = canvas.height/2, radius = 120;
   const n = labels.length;
@@ -1907,6 +2339,36 @@ function initEventListeners(){
       finishInterview();
     }
   });
+  // Question Simplification & Hints Drawer
+  $("#simplifyQuestionBtn")?.addEventListener("click", () => {
+    const hintBox = $("#questionHintBox");
+    if (hintBox) {
+      const isHidden = hintBox.style.display === "none";
+      hintBox.style.display = isHidden ? "block" : "none";
+      if (isHidden) {
+        gsap.fromTo(hintBox, { opacity: 0, y: -8 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" });
+      }
+    }
+  });
+  $("#closeHintBoxBtn")?.addEventListener("click", () => {
+    const hintBox = $("#questionHintBox");
+    if (hintBox) hintBox.style.display = "none";
+  });
+
+  // Speech Recognition Controls
+  $("#speechAccentSelect")?.addEventListener("change", (e) => {
+    if (state.recognition) {
+      state.recognition.lang = e.target.value;
+    }
+    toast(`Speech accent set to: ${e.target.options[e.target.selectedIndex].text}`);
+  });
+  $("#clearSpeechBtn")?.addEventListener("click", () => {
+    $("#answerInput").value = "";
+    state.baseTranscript = "";
+    updateLiveMeta();
+    toast("Speech answer cleared. Ready to speak again!");
+  });
+
   $("#micToggle")?.addEventListener("click", () => {
     if (state.isRecording) stopRecording();
     else startRecording();

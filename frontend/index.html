@@ -222,8 +222,8 @@
         <div class="field-row">
           <label>Interview experience level <span class="field-subtitle">— Questions tailor to your tier</span></label>
           <div class="level-chips" id="levelChips">
-            <span class="chip selectable" data-level="junior" title="Entry-Level / Intern / 0-2 yrs: CS fundamentals, algorithms, core concepts">Junior / Entry (0–2 yrs)</span>
-            <span class="chip selectable selected" data-level="mid" title="Mid-Level / 2-5 yrs: Practical architecture, indexing, APIs, trade-offs">Mid-Level (2–5 yrs)</span>
+            <span class="chip selectable selected" data-level="junior" title="Easier & friendly: core concepts, practical questions, step-by-step guidance">🟢 Easy / Beginner (0–2 yrs)</span>
+            <span class="chip selectable" data-level="mid" title="Mid-Level / 2-5 yrs: Practical architecture, indexing, APIs, trade-offs">Mid-Level (2–5 yrs)</span>
             <span class="chip selectable" data-level="senior" title="Senior / Staff / 5+ yrs: Distributed systems, high-scale architecture, leadership">Senior / Staff (5+ yrs)</span>
             <span class="chip selectable" data-level="all" title="Comprehensive mixed difficulty interview">All Levels (Mixed)</span>
           </div>
@@ -362,20 +362,42 @@
         <div class="candidate-feed-card" id="candidateFeedCard">
           <div class="candidate-video-container">
             <video id="candidateWebcam" autoplay playsinline muted></video>
+            <canvas id="behaviorCanvas" width="160" height="120" style="display:none;"></canvas>
             <div class="cam-live-indicator"><span class="cue-dot live"></span> LIVE CAM</div>
-            <div class="cam-label-tag" id="candidateLevelBadge">MID-LEVEL CANDIDATE</div>
+            <div class="cam-label-tag" id="candidateLevelBadge">EASY / JUNIOR CANDIDATE</div>
             <div class="cam-controls-mini">
               <button class="cam-mini-btn" id="flipCamBtn" title="Flip / Mirror Video" type="button">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3"/></svg>
               </button>
             </div>
+
+            <!-- AI BEHAVIOR & INTEGRITY LIVE HUD OVERLAYS -->
+            <div class="behavior-hud-bar" id="behaviorHudBar">
+              <div class="hud-pill" id="hudEyeContactPill" title="Candidate eye contact & gaze direction tracking">
+                <span class="hud-dot good" id="hudEyeDot"></span>
+                <span id="hudEyeText">Eye: 98% Focused</span>
+              </div>
+              <div class="hud-pill" id="hudFacePill" title="Face centered in webcam frame">
+                <span class="hud-dot good" id="hudFaceDot"></span>
+                <span id="hudFaceText">👤 Centered</span>
+              </div>
+              <div class="hud-pill" id="hudAntiCheatPill" title="Anti-cheating window blur & tab switch monitor">
+                <span class="hud-icon">🛡️</span>
+                <span id="hudAntiCheatText">Verified (0 Tabs)</span>
+              </div>
+            </div>
+
+            <!-- PROCTOR LIVE ALERT BANNER -->
+            <div class="hud-proctor-alert" id="hudProctorAlert" style="display:none;"></div>
           </div>
           <div class="candidate-meta-bar">
             <div class="cand-meta-left">
               <span class="cand-indicator-dot"></span>
               <span class="candidate-name" id="candidateNameTag">You (Candidate)</span>
             </div>
-            <span class="cam-status-text-live">WEBCAM ACTIVE</span>
+            <div class="cand-meta-right">
+              <span class="cand-behavior-score" id="candBehaviorScoreTag">Composure: 98%</span>
+            </div>
           </div>
         </div>
       </div>
@@ -384,12 +406,16 @@
       <div class="room-center">
         <div class="question-top-bar">
           <div class="question-tag" id="questionTag">TECHNICAL</div>
-          <div class="level-tag" id="questionLevelTag">MID-LEVEL</div>
+          <div class="level-tag junior" id="questionLevelTag">EASY / JUNIOR</div>
           <div class="language-tag" id="roomLangTag">EN</div>
         </div>
         <h2 class="question-text" id="questionText">Loading question…</h2>
 
         <div class="room-controls">
+          <button class="icon-btn highlight-hint-btn" id="simplifyQuestionBtn" title="Make question simpler with plain-English hints">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 2C8.13 2 5 5.13 5 9C5 11.38 6.19 13.47 8 14.74V17C8 17.55 8.45 18 9 18H15C15.55 18 16 17.55 16 17V14.74C17.81 13.47 19 11.38 19 9C19 5.13 15.87 2 12 2Z" stroke="currentColor" stroke-width="1.5"/><path d="M9 21H15" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            💡 Simplify & Hints
+          </button>
           <button class="icon-btn" id="speakQuestionBtn" title="Read question aloud">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M11 5L6 9H2V15H6L11 19V5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M15.5 8.5C16.5 9.5 17 10.7 17 12C17 13.3 16.5 14.5 15.5 15.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
             Read aloud
@@ -397,16 +423,59 @@
           <button class="icon-btn" id="skipQuestionBtn">Skip question</button>
         </div>
 
+        <!-- EXPANDABLE QUESTION SIMPLIFICATION & HINTS DRAWER -->
+        <div class="question-hint-box" id="questionHintBox" style="display:none;">
+          <div class="hint-header">
+            <span class="hint-badge">💡 Plain English Guide & Suggested Structure</span>
+            <button class="hint-close-btn" id="closeHintBoxBtn" type="button" title="Close hints">&times;</button>
+          </div>
+          <p class="hint-simplified" id="hintSimplifiedText">Loading simplified question explanation…</p>
+          <div class="hint-points-title">Key Points To Mention:</div>
+          <ul class="hint-points-list" id="hintPointsList"></ul>
+          <div class="hint-starter-box">
+            <span class="hint-starter-label">Starter Template:</span>
+            <span class="hint-starter-text" id="hintStarterText"></span>
+          </div>
+        </div>
+
         <div class="answer-box">
           <div class="answer-header">
             <span class="answer-label">Your answer</span>
-            <div class="mic-toggle" id="micToggle">
-              <span class="mic-dot"></span>
-              <span id="micToggleLabel">Tap mic to speak</span>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 15C13.66 15 15 13.66 15 12V6C15 4.34 13.66 3 12 3C10.34 3 9 4.34 9 6V12C9 13.66 10.34 15 12 15Z" stroke="currentColor" stroke-width="1.5"/><path d="M19 11V12C19 15.87 15.87 19 12 19C8.13 19 5 15.87 5 12V11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <div class="audio-input-tools">
+              <!-- Live Audio VU Level Meter -->
+              <div class="audio-vu-container" id="audioVuContainer" title="Microphone sound volume detection">
+                <div class="audio-vu-bars" id="audioVuBars">
+                  <span class="vu-bar"></span>
+                  <span class="vu-bar"></span>
+                  <span class="vu-bar"></span>
+                  <span class="vu-bar"></span>
+                  <span class="vu-bar"></span>
+                </div>
+                <span class="audio-status-pill" id="audioStatusPill">Mic Ready</span>
+              </div>
+              <div class="mic-toggle" id="micToggle">
+                <span class="mic-dot"></span>
+                <span id="micToggleLabel">Tap mic to speak</span>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 15C13.66 15 15 13.66 15 12V6C15 4.34 13.66 3 12 3C10.34 3 9 4.34 9 6V12C9 13.66 10.34 15 12 15Z" stroke="currentColor" stroke-width="1.5"/><path d="M19 11V12C19 15.87 15.87 19 12 19C8.13 19 5 15.87 5 12V11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              </div>
             </div>
           </div>
-          <textarea id="answerInput" placeholder="Speak using the mic, or type your answer here…"></textarea>
+
+          <!-- SPEECH ACCENT & QUICK CONTROLS -->
+          <div class="speech-controls-bar">
+            <div class="speech-accent-wrap">
+              <label for="speechAccentSelect" class="speech-accent-label">Accent / Mic Tuning:</label>
+              <select id="speechAccentSelect" class="speech-accent-select" title="Tune voice recognition for your native pronunciation">
+                <option value="en-US">English (US / Global Standard)</option>
+                <option value="en-IN" selected>English (India / South Asia)</option>
+                <option value="en-GB">English (UK / Commonwealth)</option>
+                <option value="hi-IN">Hinglish / Hindi Hybrid</option>
+              </select>
+            </div>
+            <button type="button" class="btn-clean-speech" id="clearSpeechBtn" title="Clear recorded text to speak again">↺ Reset Text</button>
+          </div>
+
+          <textarea id="answerInput" placeholder="Tap 'Tap mic to speak' and talk into your microphone, or type your answer here…"></textarea>
           <div class="answer-meta">
             <span id="liveWordCount">0 words</span>
             <span id="liveFillerCount">0 filler words</span>
@@ -534,6 +603,43 @@
         </div>
 
         <div class="report-right">
+          <!-- AI BEHAVIOR & INTEGRITY REPORT CARD -->
+          <div class="proctoring-report-card" id="proctoringReportCard">
+            <div class="proctoring-card-header">
+              <div class="proctoring-title-group">
+                <span class="proctoring-shield-icon">🛡️</span>
+                <div>
+                  <h3 class="proctoring-card-title">Candidate Behavior & Anti-Cheating Assessment</h3>
+                  <p class="proctoring-card-sub">Real-time eye tracking, attention posture, and screen integrity analysis</p>
+                </div>
+              </div>
+              <div class="proctoring-badge-score" id="reportBehaviorScoreBadge">96% Composure</div>
+            </div>
+
+            <div class="proctoring-stats-row">
+              <div class="proctor-stat-item">
+                <span class="p-stat-label">Eye Contact Ratio</span>
+                <span class="p-stat-value" id="reportEyeContactPct">95%</span>
+                <span class="p-stat-sub">Screen focus</span>
+              </div>
+              <div class="proctor-stat-item">
+                <span class="p-stat-label">Screen Integrity</span>
+                <span class="p-stat-value" id="reportIntegrityRating">Verified</span>
+                <span class="p-stat-sub" id="reportTabCountSub">0 tab switches</span>
+              </div>
+              <div class="proctor-stat-item">
+                <span class="p-stat-label">Anti-Cheat Risk</span>
+                <span class="p-stat-value text-clean" id="reportCheatRisk">Clean</span>
+                <span class="p-stat-sub">Zero anomalies</span>
+              </div>
+            </div>
+
+            <div class="proctoring-findings-box" id="reportProctorFindings">
+              <div class="proctor-findings-title">AI Observation Summary:</div>
+              <p class="proctor-findings-text" id="reportProctorSummaryText">Consistently maintained eye contact with interviewer; no external tabs opened or unprompted clipboard paste detected.</p>
+            </div>
+          </div>
+
           <div class="highlight-row">
             <div class="highlight-card strong">
               <p class="highlight-tag">Strongest Dimension</p>

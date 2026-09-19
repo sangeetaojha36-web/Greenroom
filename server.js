@@ -11,7 +11,7 @@ import embeddedQuestionBank from "./data/question_bank_data.js";
 
 const execFileAsync = promisify(execFile);
 
-async function evaluateWithPythonOrJs(question, answer, duration, persona, language, companyId) {
+async function evaluateWithPythonOrJs(question, answer, duration, persona, language, companyId, behaviorData = null) {
   try {
     const payload = JSON.stringify({
       answer,
@@ -21,7 +21,8 @@ async function evaluateWithPythonOrJs(question, answer, duration, persona, langu
       company_id: companyId,
       persona,
       duration_seconds: duration,
-      language
+      language,
+      behavior: behaviorData
     });
     const { stdout } = await execFileAsync("python3", [path.join(__dirname, "backend", "ai_engine.py"), "--eval", payload], { timeout: 3500 });
     const pyResult = JSON.parse(stdout.trim());
@@ -31,7 +32,7 @@ async function evaluateWithPythonOrJs(question, answer, duration, persona, langu
   } catch (err) {
     // Fall back gracefully to native JS aiEngine
   }
-  return aiEngine.evaluateAnswer(question, answer, duration, persona, language, companyId);
+  return aiEngine.evaluateAnswer(question, answer, duration, persona, language, companyId, behaviorData);
 }
 
 const __filename = fileURLToPath(import.meta.url);
@@ -290,6 +291,85 @@ app.get("/api/benchmark/:company_id", (req, res) => {
   res.json(bm);
 });
 
+// Helper to make questions approachable and easier to understand
+function enrichQuestionWithHints(q) {
+  let simplified = q.q;
+  let hints = [];
+  let starter = "A clear way to begin is: 'In simple terms, ...'";
+
+  const text = (q.q || "").toLowerCase();
+
+  if (text.includes("indexing") || text.includes("index")) {
+    simplified = "What is a database index, and why would you add or avoid adding too many indexes?";
+    hints = [
+      "Explain that an index works like a book index to speed up search queries",
+      "Mention that each new index slows down insert and update writes",
+      "Trade-off: Fast search vs. slower writes and extra disk space"
+    ];
+    starter = "Think of an index like the index at the back of a book: it helps you find data immediately without reading every page...";
+  } else if (text.includes("process") && text.includes("thread")) {
+    simplified = "What is the simple difference between a process and a thread?";
+    hints = [
+      "A process is a standalone running program with its own private memory",
+      "Threads live inside a process and share memory together",
+      "Processes are heavier to create; threads are lightweight"
+    ];
+    starter = "The key difference comes down to memory: a process has its own isolated memory space, while threads inside it share memory...";
+  } else if (text.includes("rest") || text.includes("api")) {
+    simplified = "How do APIs work, and what makes a REST API clean?";
+    hints = [
+      "An API is a bridge that lets two different applications exchange data",
+      "REST uses standard HTTP methods (GET to fetch, POST to create)",
+      "Stateless requests returning clean JSON responses"
+    ];
+    starter = "In simple terms, an API is like a waiter in a restaurant taking orders from the client to the server and bringing back the response...";
+  } else if (text.includes("solid") || text.includes("oop") || text.includes("object oriented")) {
+    simplified = "What are the key principles of writing clean, organized code?";
+    hints = [
+      "Single Responsibility: Each function/class should do one job well",
+      "Modularity: Easy to test and update without breaking other parts",
+      "Reusability: Avoid duplicating code unnecessarily"
+    ];
+    starter = "The main goal of clean code principles is to keep code easy to understand, test, and maintain over time...";
+  } else if (text.includes("sql") || text.includes("nosql")) {
+    simplified = "When would you choose a relational SQL database versus a NoSQL database?";
+    hints = [
+      "SQL (like Postgres/MySQL) has strict tables, schemas, and ACID transactions",
+      "NoSQL (like MongoDB) is flexible document storage for rapidly changing schemas",
+      "Use SQL for relational financial/user data, NoSQL for high-velocity logs or documents"
+    ];
+    starter = "I choose SQL when data structure is consistent and relationships matter, whereas NoSQL is great for flexible, nested data...";
+  } else if (text.includes("conflict") || text.includes("failure") || text.includes("disagree") || text.includes("mistake") || text.includes("challenge") || text.includes("tell me about")) {
+    simplified = "Tell a real personal story: What was the challenge, what action did you take, and what was the positive outcome?";
+    hints = [
+      "Brief context: What was the situation in 1-2 sentences?",
+      "Your action: Focus on what YOU did to solve or de-escalate it",
+      "The result: What did the team learn or achieve?"
+    ];
+    starter = "A great example was when our team encountered... I stepped in by... which resulted in...";
+  } else {
+    // Conversational simplification
+    simplified = q.q
+      .replace(/What are the trade-offs of/i, "What are the pros and cons of")
+      .replace(/Elaborate on/i, "Explain simply")
+      .replace(/Walk through/i, "Explain step-by-step")
+      .replace(/Discuss the ramifications/i, "What happens when");
+    hints = [
+      "Start by defining the core concept in plain words without jargon",
+      "Give one quick practical example of where you would use it",
+      "Mention a common edge case or pitfall to look out for"
+    ];
+    starter = "To explain this directly, the central idea is...";
+  }
+
+  return {
+    ...q,
+    simplified_prompt: simplified,
+    hints,
+    starter_template: starter
+  };
+}
+
 app.get("/api/questions/:company_id", (req, res) => {
   const companyId = req.params.company_id;
   const c = COMPANY_INDEX.get(companyId);
@@ -300,7 +380,9 @@ app.get("/api/questions/:company_id", (req, res) => {
   const roleKeys = Object.keys(c.roles || {});
   const role = req.query.role || roleKeys[0] || "Software Engineer";
   const count = parseInt(req.query.count || "6", 10);
-  const requestedLevel = (req.query.level || "mid").toLowerCase(); // "junior", "mid", "senior", "all"
+  let rawLevel = (req.query.level || "junior").toLowerCase();
+  if (rawLevel === "easy") rawLevel = "junior";
+  const requestedLevel = rawLevel; // "junior", "mid", "senior", "all"
 
   const allRoleQuestions = c.roles?.[role] || [];
   const allBehavioral = c.behavioral || [];
@@ -309,9 +391,9 @@ app.get("/api/questions/:company_id", (req, res) => {
   // Filter or sort pool according to level
   const filterByLevel = (pool, targetLevel) => {
     if (targetLevel === "all") return shuffle(pool);
-    const exact = pool.filter(q => q.level === targetLevel);
-    const fallback = pool.filter(q => q.level !== targetLevel);
-    // If not enough exact questions, pad with fallback
+    const target = targetLevel === "easy" ? "junior" : targetLevel;
+    const exact = pool.filter(q => q.level === target || (target === "junior" && q.level === "easy"));
+    const fallback = pool.filter(q => q.level !== target && q.level !== "easy");
     return [...shuffle(exact), ...shuffle(fallback)];
   };
 
@@ -329,13 +411,14 @@ app.get("/api/questions/:company_id", (req, res) => {
     ...hrPool.slice(0, nHr)
   ]).map(q => {
     const bench = dbService.generateBenchmarkForQuestion(q, c.name);
-    return {
+    const enriched = enrichQuestionWithHints({
       ...q,
-      level: q.level || (requestedLevel === "all" ? "mid" : requestedLevel),
+      level: q.level || (requestedLevel === "all" ? "junior" : requestedLevel),
       expected_answer: q.expected_answer || bench.expected_answer,
       key_points: q.key_points || bench.key_points,
       genuine: true
-    };
+    });
+    return enriched;
   });
 
   res.json({
@@ -345,9 +428,9 @@ app.get("/api/questions/:company_id", (req, res) => {
     level: requestedLevel,
     culture_brief: CULTURE_BRIEFS[companyId] || DEFAULT_CULTURE,
     questions: selected.slice(0, count),
-    all_technical: technicalPool.map(q => ({ ...q, level: q.level || "mid" })),
-    all_behavioral: behavioralPool.map(q => ({ ...q, level: q.level || "mid" })),
-    all_hr: hrPool.map(q => ({ ...q, level: q.level || "mid" }))
+    all_technical: technicalPool.map(q => enrichQuestionWithHints({ ...q, level: q.level || "junior" })),
+    all_behavioral: behavioralPool.map(q => enrichQuestionWithHints({ ...q, level: q.level || "junior" })),
+    all_hr: hrPool.map(q => enrichQuestionWithHints({ ...q, level: q.level || "junior" }))
   });
 });
 
@@ -357,7 +440,7 @@ app.post("/api/evaluate", async (req, res) => {
     type: data.question_type || "general",
     keywords: data.keywords || [],
     q: data.question_text || "",
-    level: data.level || "mid"
+    level: data.level || "junior"
   };
 
   if (data.question_id) {
@@ -372,6 +455,7 @@ app.post("/api/evaluate", async (req, res) => {
   const persona = data.persona || "friendly";
   const language = data.language || "english";
   const companyId = data.company_id || "google";
+  const behaviorData = data.behavior || null;
 
   const result = await evaluateWithPythonOrJs(
     question,
@@ -379,7 +463,8 @@ app.post("/api/evaluate", async (req, res) => {
     duration,
     persona,
     language,
-    companyId
+    companyId,
+    behaviorData
   );
   result.question_id = data.question_id;
 
@@ -391,7 +476,7 @@ app.post("/api/evaluate", async (req, res) => {
       question_id: data.question_id || "",
       question_text: data.question_text || question.q || "",
       question_type: question.type || "technical",
-      level: question.level || "mid",
+      level: question.level || "junior",
       candidate_answer: answer,
       expected_answer: result.comparison?.expected_answer || "",
       key_points: result.comparison?.key_points || [],
@@ -401,6 +486,7 @@ app.post("/api/evaluate", async (req, res) => {
       breakdown: result.breakdown || {},
       feedback: result.feedback || [],
       interviewer_notes: result.interviewer_notes || [],
+      behavior: result.behavior || null,
       duration_seconds: duration || 0
     }).catch(e => console.warn("Async response save notice:", e.message));
   }
@@ -422,12 +508,39 @@ app.post("/api/report", async (req, res) => {
   const structure = results.map(r => parseFloat(r.breakdown?.structure?.score || 0));
   const fluency = results.map(r => parseFloat(r.breakdown?.fluency?.score || 0));
   const confidence = results.map(r => parseFloat(r.breakdown?.confidence?.score || 0));
+  const behaviorScores = results.map(r => parseFloat(r.breakdown?.behavior?.score ?? r.behavior?.score ?? 90));
+  const eyeContacts = results.map(r => parseFloat(r.breakdown?.behavior?.eye_contact ?? r.behavior?.eye_contact ?? 90));
+  const totalTabSwitches = results.reduce((acc, r) => acc + parseInt(r.breakdown?.behavior?.tab_switches ?? r.behavior?.tab_switches ?? 0, 10), 0);
+  const allCheatFlags = results.flatMap(r => r.breakdown?.behavior?.cheat_flags ?? r.behavior?.cheat_flags ?? []);
 
   const radar = {
     Relevance: Number(mean(relevance).toFixed(1)),
     Structure: Number(mean(structure).toFixed(1)),
     Fluency: Number(mean(fluency).toFixed(1)),
-    Confidence: Number(mean(confidence).toFixed(1))
+    Confidence: Number(mean(confidence).toFixed(1)),
+    Behavior: Number(mean(behaviorScores).toFixed(1))
+  };
+
+  const avgBehavior = Number(mean(behaviorScores).toFixed(1));
+  const avgEyeContact = Number(mean(eyeContacts).toFixed(1));
+  let integrityStatus = "Verified Clean";
+  let proctorVerdict = "High Professional Composure & Integrity";
+  if (totalTabSwitches >= 2 || allCheatFlags.length >= 2 || avgBehavior < 65) {
+    integrityStatus = "Attention Flags Recorded";
+    proctorVerdict = "Noticed attention drift / screen switching during interview";
+  } else if (totalTabSwitches === 1 || allCheatFlags.length === 1 || avgBehavior < 80) {
+    integrityStatus = "Minor Drift Detected";
+    proctorVerdict = "Generally focused with occasional peripheral glance";
+  }
+
+  const proctoringSummary = {
+    overall_behavior_score: avgBehavior,
+    avg_eye_contact: avgEyeContact,
+    total_tab_switches: totalTabSwitches,
+    integrity_status: integrityStatus,
+    proctor_verdict: proctorVerdict,
+    flags: Array.from(new Set(allCheatFlags)),
+    passed_integrity: totalTabSwitches <= 1 && avgBehavior >= 65
   };
 
   let strongest = "Relevance";
@@ -458,13 +571,14 @@ app.post("/api/report", async (req, res) => {
       company_id: companyId,
       company_name: compObj?.name || data.company_name || companyId,
       role: data.role || "Software Engineer",
-      level: data.level || "mid",
+      level: data.level || "junior",
       format: data.format || "onsite",
       persona: data.persona || "friendly",
       language: data.language || "english",
       overall_score: verdictAvg,
       hire_verdict: hireVerdict,
       radar,
+      behavior_summary: proctoringSummary,
       strongest_area: strongest,
       weakest_area: weakest,
       questions_count: results.length,
@@ -492,6 +606,7 @@ app.post("/api/report", async (req, res) => {
         breakdown: r.breakdown || {},
         feedback: r.feedback || [],
         interviewer_notes: r.interviewer_notes || [],
+        behavior: r.behavior || r.breakdown?.behavior || null,
         duration_seconds: r.duration_seconds || 0
       });
     }
@@ -503,6 +618,7 @@ app.post("/api/report", async (req, res) => {
     overall_average: verdictAvg,
     hire_verdict: hireVerdict,
     radar,
+    proctoring: proctoringSummary,
     strongest_area: strongest,
     weakest_area: weakest,
     questions_answered: results.length,

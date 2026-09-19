@@ -409,7 +409,85 @@ export function formatInterviewerNotes(feedback = []) {
   return notes;
 }
 
-export function evaluateAnswer(question, answer, durationSeconds = null, persona = "friendly", language = "english", companyId = "google") {
+export function evaluateBehavior(behaviorData = {}) {
+  const eyeContact = typeof behaviorData.eye_contact_ratio === "number"
+    ? Math.max(0, Math.min(100, behaviorData.eye_contact_ratio))
+    : 90;
+  const tabSwitches = parseInt(behaviorData.tab_switches || 0, 10);
+  const gazeAwayCount = parseInt(behaviorData.gaze_away_count || 0, 10);
+  const gazeDownCount = parseInt(behaviorData.gaze_down_count || 0, 10);
+  const multipleFaces = Boolean(behaviorData.multiple_faces_detected);
+  const faceAbsent = Boolean(behaviorData.face_absent);
+  const pasteAnomalies = parseInt(behaviorData.paste_anomalies || 0, 10);
+
+  // Calculate integrity deductions
+  let deductions = 0;
+  const cheatFlags = [];
+
+  if (tabSwitches > 0) {
+    deductions += Math.min(tabSwitches * 14, 40);
+    cheatFlags.push(`Tab switch detected (${tabSwitches} time${tabSwitches > 1 ? "s" : ""}) — switched away from interview screen`);
+  }
+
+  if (multipleFaces) {
+    deductions += 25;
+    cheatFlags.push("Multiple people detected in webcam feed");
+  }
+
+  if (faceAbsent) {
+    deductions += 15;
+    cheatFlags.push("Candidate stepped out of webcam view during response");
+  }
+
+  if (gazeDownCount >= 4) {
+    deductions += Math.min((gazeDownCount - 3) * 4, 18);
+    cheatFlags.push(`Frequent downward gaze shifts (${gazeDownCount} times) — potential notes or phone reading`);
+  }
+
+  if (gazeAwayCount >= 5) {
+    deductions += Math.min((gazeAwayCount - 4) * 3, 15);
+    cheatFlags.push(`Frequent lateral gaze shifts (${gazeAwayCount} times) — looking off-screen`);
+  }
+
+  if (pasteAnomalies > 0) {
+    deductions += Math.min(pasteAnomalies * 10, 20);
+    cheatFlags.push("Sudden clipboard paste detected during answer entry");
+  }
+
+  // Eye contact score component (weight 40%)
+  const eyeContactScore = Math.max(0, Math.min(100, eyeContact));
+  // Composure baseline (weight 60% minus cheating deductions)
+  const composureScore = Math.max(0, Math.min(100, 100 - deductions));
+
+  const finalScore = Number(Math.max(0, Math.min(100, (eyeContactScore * 0.4) + (composureScore * 0.6))).toFixed(1));
+
+  let integrityRating = "Clean / Verified";
+  let cheatRisk = "low";
+  if (deductions >= 30 || tabSwitches >= 2 || multipleFaces) {
+    integrityRating = "Suspicious / Flagged";
+    cheatRisk = "high";
+  } else if (deductions >= 15 || tabSwitches === 1 || gazeDownCount >= 3) {
+    integrityRating = "Mild Attention Drift";
+    cheatRisk = "medium";
+  }
+
+  return {
+    score: finalScore,
+    eye_contact: eyeContactScore,
+    composure: composureScore,
+    integrity_rating: integrityRating,
+    cheat_risk: cheatRisk,
+    cheat_flags: cheatFlags,
+    tab_switches: tabSwitches,
+    gaze_away_count: gazeAwayCount,
+    gaze_down_count: gazeDownCount,
+    notes: cheatFlags.length === 0
+      ? "Excellent eye contact and professional focus maintained throughout."
+      : cheatFlags.join("; ")
+  };
+}
+
+export function evaluateAnswer(question, answer, durationSeconds = null, persona = "friendly", language = "english", companyId = "google", behaviorData = null) {
   const qType = question?.type || "general";
   const keywords = question?.keywords || [];
 
@@ -417,13 +495,21 @@ export function evaluateAnswer(question, answer, durationSeconds = null, persona
   const struct = structureScore(answer, qType, language);
   const fl = fluencyScore(answer, durationSeconds, language);
   const conf = confidenceScore(answer, language);
+  const beh = evaluateBehavior(behaviorData || {});
 
   // Compare candidate answer against model benchmark answer stored in database
   const comparison = compareAnswerToBenchmark(answer, question);
   const coverageBonus = (comparison.coverage_percentage - 50) * 0.1; // -5 to +5 adjustment
 
+  // Factor behavior & integrity into overall score (weighting: rel 30%, struct 18%, fl 12%, conf 10%, benchmark 18%, behavior 12%)
   const overall = Number(Math.max(0, Math.min(100, (
-    (rel * 0.35) + (struct.score * 0.20) + (fl.score * 0.15) + (conf.score * 0.10) + (comparison.coverage_percentage * 0.20) + coverageBonus
+    (rel * 0.30) +
+    (struct.score * 0.18) +
+    (fl.score * 0.12) +
+    (conf.score * 0.10) +
+    (comparison.coverage_percentage * 0.18) +
+    (beh.score * 0.12) +
+    coverageBonus
   ))).toFixed(1));
 
   let verdict = "Weak";
@@ -433,6 +519,13 @@ export function evaluateAnswer(question, answer, durationSeconds = null, persona
 
   const feedback = generateFeedback(overall, rel, struct, fl, conf, qType, persona, language);
 
+  // Add behavior & anti-cheating feedback notes
+  if (beh.cheat_flags.length > 0) {
+    feedback.push(`Integrity Notice: ${beh.cheat_flags[0]}`);
+  } else if (beh.eye_contact >= 85) {
+    feedback.push("Body Language: Confident, steady eye contact with the interviewer.");
+  }
+
   if (comparison.missed_points.length > 0) {
     const mainMissed = comparison.missed_points[0].split(":")[0];
     feedback.unshift(`Model Comparison: Review the benchmark answer to incorporate ${mainMissed}.`);
@@ -441,6 +534,12 @@ export function evaluateAnswer(question, answer, durationSeconds = null, persona
   }
 
   const interviewerNotes = formatInterviewerNotes(feedback);
+  if (beh.cheat_flags.length > 0) {
+    interviewerNotes.push(`[-] Anti-Cheat: ${beh.cheat_flags[0]}`);
+  } else {
+    interviewerNotes.push(`[+] Composure: Strong eye contact (${Math.round(beh.eye_contact)}%) & focus verified`);
+  }
+
   const benchmark = calculatePercentile(overall, companyId);
 
   return {
@@ -451,11 +550,13 @@ export function evaluateAnswer(question, answer, durationSeconds = null, persona
       structure: struct,
       fluency: fl,
       confidence: conf,
-      benchmark_coverage: comparison.coverage_percentage
+      benchmark_coverage: comparison.coverage_percentage,
+      behavior: beh
     },
     feedback,
     interviewer_notes: interviewerNotes,
     benchmark,
+    behavior: beh,
     comparison: {
       expected_answer: comparison.expected_answer,
       key_points: comparison.key_points,
