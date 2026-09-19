@@ -1,0 +1,74 @@
+{
+  "entities": {
+    "Question": {
+      "collection": "questions",
+      "fields": {
+        "company_id": { "type": "string", "required": true },
+        "company_name": { "type": "string", "required": true },
+        "role": { "type": "string", "required": true },
+        "level": { "type": "string", "required": true },
+        "type": { "type": "string", "required": true },
+        "q": { "type": "string", "required": true },
+        "expected_answer": { "type": "string", "required": true },
+        "key_points": { "type": "array", "required": true },
+        "keywords": { "type": "array", "required": true },
+        "genuine": { "type": "boolean", "required": true }
+      }
+    },
+    "User": {
+      "collection": "users",
+      "fields": {
+        "email": { "type": "string", "required": true },
+        "display_name": { "type": "string", "required": false },
+        "target_role": { "type": "string", "required": false },
+        "target_level": { "type": "string", "required": false },
+        "total_interviews": { "type": "number", "required": true },
+        "avg_score": { "type": "number", "required": true },
+        "created_at": { "type": "string", "required": true },
+        "updated_at": { "type": "string", "required": true }
+      }
+    },
+    "Interview": {
+      "collection": "interviews",
+      "fields": {
+        "user_id": { "type": "string", "required": true },
+        "company_id": { "type": "string", "required": true },
+        "company_name": { "type": "string", "required": true },
+        "role": { "type": "string", "required": true },
+        "level": { "type": "string", "required": true },
+        "format": { "type": "string", "required": true },
+        "persona": { "type": "string", "required": true },
+        "language": { "type": "string", "required": true },
+        "overall_score": { "type": "number", "required": true },
+        "hire_verdict": { "type": "string", "required": true },
+        "questions_count": { "type": "number", "required": true },
+        "strongest_area": { "type": "string", "required": true },
+        "weakest_area": { "type": "string", "required": true },
+        "radar": { "type": "object", "required": true },
+        "created_at": { "type": "string", "required": true }
+      }
+    },
+    "Response": {
+      "collection": "responses",
+      "fields": {
+        "interview_id": { "type": "string", "required": true },
+        "user_id": { "type": "string", "required": true },
+        "question_id": { "type": "string", "required": true },
+        "question_text": { "type": "string", "required": true },
+        "question_type": { "type": "string", "required": true },
+        "level": { "type": "string", "required": true },
+        "candidate_answer": { "type": "string", "required": true },
+        "expected_answer": { "type": "string", "required": true },
+        "key_points": { "type": "array", "required": true },
+        "covered_points": { "type": "array", "required": true },
+        "missed_points": { "type": "array", "required": true },
+        "overall_score": { "type": "number", "required": true },
+        "breakdown": { "type": "object", "required": true },
+        "feedback": { "type": "array", "required": true },
+        "interviewer_notes": { "type": "array", "required": false },
+        "duration_seconds": { "type": "number", "required": true },
+        "created_at": { "type": "string", "required": true }
+      }
+    }
+  }
+}

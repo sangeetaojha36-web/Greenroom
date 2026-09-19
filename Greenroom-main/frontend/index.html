@@ -1,0 +1,1015 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>GreenRoom — Your Backstage Before the Interview</title>
+<meta name="description" content="AI-powered interview simulator. Pick a company, face real questions, get scored like a real interviewer scored you." />
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#FFB020" />
+
+<!-- Fonts -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<!-- GSAP -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js"></script>
+
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- Grain / vignette overlays -->
+<div class="stage-grain"></div>
+<div class="spotlight" id="spotlight"></div>
+
+<!-- Curtain transition layer -->
+<div class="curtain" id="curtain">
+  <div class="curtain-panel curtain-left"></div>
+  <div class="curtain-panel curtain-right"></div>
+</div>
+
+<!-- NAV -->
+<nav class="nav" id="mainNav">
+  <div class="nav-brand">
+    <span class="brand-mark">●</span>
+    <span class="brand-name">GreenRoom</span>
+  </div>
+  <div class="nav-steps" id="navSteps">
+    <span class="nav-step active" data-step="0">01 — Stage</span>
+    <span class="nav-step" data-step="1">02 — Casting</span>
+    <span class="nav-step" data-step="2">03 — Rehearsal</span>
+    <span class="nav-step" data-step="3">04 — Notes</span>
+  </div>
+  <div class="nav-actions">
+    <!-- Auth Status / Profile Button -->
+    <button class="nav-auth-btn" id="navAuthBtn" title="Sign In or Register Candidate Profile">
+      <span class="auth-icon">👤</span>
+      <span id="navAuthBtnText">Sign In / Register</span>
+    </button>
+    <div class="nav-user-chip" id="navUserChip" style="display:none;" title="Click to view profile & records">
+      <span class="user-avatar-initial" id="navUserAvatar">C</span>
+      <div class="user-meta">
+        <span class="user-name" id="navUserName">Candidate</span>
+        <span class="user-role-badge" id="navUserRole">Software Engineer</span>
+      </div>
+      <button class="user-logout-btn" id="navLogoutBtn" title="Sign Out">✕</button>
+    </div>
+
+    <button class="nav-db-btn" id="navDbRecordsBtn" title="Stored Performance Records & Database">
+      <span class="db-dot-live"></span>
+      <span>Database Records</span>
+    </button>
+    <button class="nav-btn-action" id="navCountdownPill" style="display:none;" title="View countdown">
+      <span class="pill-dot"></span> <span id="navCountdownText">0d left</span>
+    </button>
+    <div class="nav-cue" id="navCue">
+      <span class="cue-dot"></span> OFF AIR
+    </div>
+  </div>
+</nav>
+
+<main id="app">
+
+  <!-- ============ SCREEN 0 — HERO / LANDING ============ -->
+  <section class="screen screen-hero active" data-screen="0">
+    <div class="hero-grid">
+      <div class="hero-copy">
+        <p class="eyebrow">// pre-show prep for your next interview</p>
+        <h1 class="hero-title">
+          Walk in <span class="accent-text">already</span><br/>
+          having done this <span class="accent-text">before.</span>
+        </h1>
+        <p class="hero-sub">
+          GreenRoom is the room backstage where you rehearse before the real thing.
+          Pick the company you're interviewing with, face the exact kind of questions
+          their panel actually asks, and get scored the way a real interviewer scores you —
+          on relevance, structure, fluency and confidence.
+        </p>
+
+        <!-- COUNTDOWN WIDGET (Hero) -->
+        <div class="countdown-widget" id="heroCountdownWidget">
+          <div class="countdown-header">
+            <div class="countdown-title-wrap">
+              <span class="countdown-icon">⏱️</span>
+              <div>
+                <span class="countdown-label">UPCOMING INTERVIEW COUNTDOWN</span>
+                <p class="countdown-target" id="countdownTargetText">No target date set yet</p>
+              </div>
+            </div>
+            <button class="btn btn-tiny" id="setCountdownBtn">Set Date</button>
+          </div>
+          <div class="countdown-timer" id="countdownTimerDisplay" style="display:none;">
+            <div class="time-block"><span class="time-val" id="cdDays">00</span><span class="time-unit">DAYS</span></div>
+            <span class="time-sep">:</span>
+            <div class="time-block"><span class="time-val" id="cdHours">00</span><span class="time-unit">HOURS</span></div>
+            <span class="time-sep">:</span>
+            <div class="time-block"><span class="time-val" id="cdMins">00</span><span class="time-unit">MINS</span></div>
+            <div class="countdown-sync-btn-wrap">
+              <button class="btn btn-ghost btn-tiny" id="heroCalSyncBtn" title="Sync to Calendar">📅 Sync Cal</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="hero-actions">
+          <button class="btn btn-primary" id="startBtn">
+            <span>Enter the Green Room</span>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 8H14M14 8L9 3M14 8L9 13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <button class="btn btn-secondary" id="openLinkedInBtn">
+            <span>📋 Import LinkedIn / Bio</span>
+          </button>
+          <button class="btn btn-ghost" id="howItWorksBtn">How it scores you</button>
+        </div>
+        <div class="hero-stats">
+          <div class="stat"><span class="stat-num" data-count="20">0</span><span class="stat-label">Companies loaded</span></div>
+          <div class="stat"><span class="stat-num" data-count="450">0</span><span class="stat-label">Real questions</span></div>
+          <div class="stat"><span class="stat-num" data-count="4">0</span><span class="stat-label">Scoring dimensions</span></div>
+        </div>
+
+        <div class="achievements-section">
+          <div class="achievements-header">
+            <p class="achievements-title">Your Achievement Vault</p>
+            <span class="achievements-counter" id="unlockedBadgeCount">0 / 8 unlocked</span>
+          </div>
+          <div class="badges-grid" id="badgesGrid">
+            <!-- Badges injected by JS -->
+          </div>
+        </div>
+      </div>
+
+      <div class="hero-visual">
+        <div class="mic-rig">
+          <div class="signal-ring ring-1"></div>
+          <div class="signal-ring ring-2"></div>
+          <div class="signal-ring ring-3"></div>
+          <div class="mic-core">
+            <svg width="30" height="30" viewBox="0 0 24 24" fill="none"><path d="M12 15C13.66 15 15 13.66 15 12V6C15 4.34 13.66 3 12 3C10.34 3 9 4.34 9 6V12C9 13.66 10.34 15 12 15Z" stroke="currentColor" stroke-width="1.5"/><path d="M19 11V12C19 15.87 15.87 19 12 19C8.13 19 5 15.87 5 12V11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M12 19V22" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          </div>
+          <div class="waveform" id="heroWaveform"></div>
+        </div>
+        <p class="mic-caption">LIVE MOCK · standing by</p>
+      </div>
+    </div>
+
+    <div class="marquee">
+      <div class="marquee-track">
+        <span>GOOGLE</span><span>AMAZON</span><span>MICROSOFT</span><span>META</span><span>APPLE</span><span>NETFLIX</span><span>ADOBE</span><span>ORACLE</span><span>SALESFORCE</span><span>TCS</span><span>INFOSYS</span><span>WIPRO</span><span>FLIPKART</span><span>ZOMATO</span><span>SWIGGY</span>
+        <span>GOOGLE</span><span>AMAZON</span><span>MICROSOFT</span><span>META</span><span>APPLE</span><span>NETFLIX</span><span>ADOBE</span><span>ORACLE</span><span>SALESFORCE</span><span>TCS</span><span>INFOSYS</span><span>WIPRO</span><span>FLIPKART</span><span>ZOMATO</span><span>SWIGGY</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SCREEN 1 — COMPANY / ROLE SELECT ============ -->
+  <section class="screen screen-cast" data-screen="1">
+    <div class="casting-header-wrap">
+      <div class="section-head">
+        <p class="eyebrow">// casting call</p>
+        <h2 class="section-title">Who's on the panel today?</h2>
+        <p class="section-sub">Every company has its own audition. Pick one — we'll pull their real interview format, rounds, culture brief, and question style.</p>
+      </div>
+
+      <!-- Quick Action Toolbar -->
+      <div class="casting-toolbar">
+        <div class="search-input-wrap">
+          <input type="text" id="companySearchInput" class="company-search-input" placeholder="🔍 Search company, role, or tech..." />
+        </div>
+        <button class="btn btn-secondary btn-sm" id="spacedRepBtn">
+          <span>🔁 Weak Spots Deck</span>
+          <span class="badge-count" id="weakSpotsCount">0</span>
+        </button>
+        <button class="btn btn-ghost btn-sm" id="customBankBtn">
+          <span>➕ Paste Custom Bank</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="company-grid" id="companyGrid">
+      <!-- injected by JS -->
+    </div>
+  </section>
+
+  <!-- COMPANY DETAIL / SETUP MODAL -->
+  <div class="modal-overlay" id="setupModal">
+    <div class="modal-card" id="setupCard">
+      <button class="modal-close" id="closeModal">✕</button>
+      <div class="modal-header">
+        <div class="modal-logo" id="modalLogo">G</div>
+        <div>
+          <h3 id="modalCompanyName">Company</h3>
+          <p id="modalCompanyFocus" class="modal-focus">focus areas</p>
+        </div>
+      </div>
+
+      <div class="modal-tabs">
+        <button class="tab-btn active" data-tab="setup">Set Up Rehearsal</button>
+        <button class="tab-btn" data-tab="culture">Culture Brief <span class="tab-hint">(what they value)</span></button>
+        <button class="tab-btn" data-tab="callsheet">Call Sheet <span class="tab-hint">(past questions)</span></button>
+      </div>
+
+      <!-- TAB 1: SETUP -->
+      <div class="tab-panel active" data-panel="setup">
+        <div class="field-row">
+          <label>Round format</label>
+          <div class="round-chips" id="roundChips"></div>
+        </div>
+        <div class="field-row">
+          <label>Choose your role</label>
+          <div class="role-chips" id="roleChips"></div>
+        </div>
+        <div class="field-row">
+          <label>Interview experience level <span class="field-subtitle">— Questions tailor to your tier</span></label>
+          <div class="level-chips" id="levelChips">
+            <span class="chip selectable" data-level="junior" title="Entry-Level / Intern / 0-2 yrs: CS fundamentals, algorithms, core concepts">Junior / Entry (0–2 yrs)</span>
+            <span class="chip selectable selected" data-level="mid" title="Mid-Level / 2-5 yrs: Practical architecture, indexing, APIs, trade-offs">Mid-Level (2–5 yrs)</span>
+            <span class="chip selectable" data-level="senior" title="Senior / Staff / 5+ yrs: Distributed systems, high-scale architecture, leadership">Senior / Staff (5+ yrs)</span>
+            <span class="chip selectable" data-level="all" title="Comprehensive mixed difficulty interview">All Levels (Mixed)</span>
+          </div>
+        </div>
+        <div class="field-row">
+          <label>Interviewer persona & tone</label>
+          <div class="persona-chips" id="personaChips">
+            <span class="chip selectable selected" data-persona="friendly" title="Encouraging, conversational HR tone">Friendly HR</span>
+            <span class="chip selectable" data-persona="technical" title="No-nonsense, direct, architectural focus">Technical Lead</span>
+            <span class="chip selectable" data-persona="barraiser" title="Terse, high-standard, probing for depth">Bar-raiser</span>
+          </div>
+        </div>
+        <div class="field-row">
+          <label>Interview format</label>
+          <div class="format-chips" id="formatChips">
+            <span class="chip selectable selected" data-format="onsite" title="Standard live timer & multi-round simulation">Onsite Mode</span>
+            <span class="chip selectable" data-format="phone" title="Audio-first, calm, hidden timer pressure">Phone Screen</span>
+            <span class="chip selectable" data-format="panel" title="3 distinct rotating panel interviewers">Panel (3 Interviewers)</span>
+          </div>
+        </div>
+        <div class="field-row">
+          <label>Language & register</label>
+          <div class="lang-chips" id="langChips">
+            <span class="chip selectable selected" data-lang="english">Pure English</span>
+            <span class="chip selectable" data-lang="hinglish">Hinglish (Hindi + English)</span>
+          </div>
+        </div>
+        <div class="field-row toggle-row">
+          <label for="breathingToggle" class="toggle-label">
+            <span>Anxiety Reset Micro-Break (10s guided breathing between questions)</span>
+          </label>
+          <input type="checkbox" id="breathingToggle" class="styled-checkbox" checked />
+        </div>
+        <div class="field-row">
+          <label>Number of questions — <span id="qCountLabel">6</span></label>
+          <input type="range" min="3" max="10" value="6" id="qCountSlider" class="slider">
+        </div>
+        <div class="field-row camera-gate-row">
+          <label class="camera-gate-label">
+            <span>Candidate webcam check</span>
+            <span class="mandatory-badge">MANDATORY TO START</span>
+          </label>
+          <div class="camera-preview-box" id="cameraPreviewBox">
+            <div class="camera-video-wrapper">
+              <video id="setupCameraPreview" autoplay playsinline muted></video>
+              <div class="camera-status-overlay" id="cameraStatusOverlay">
+                <div class="cam-icon-circle">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+                </div>
+                <p class="cam-overlay-title" id="camOverlayTitle">Camera access required</p>
+                <p class="cam-overlay-desc" id="camOverlayDesc">Interview will not start without an active webcam.</p>
+                <button class="btn btn-secondary btn-sm" id="grantCameraBtn" type="button">
+                  🎥 Enable Camera Access
+                </button>
+              </div>
+            </div>
+            <div class="camera-readiness-bar">
+              <div class="cam-status-indicator" id="camStatusIndicator">
+                <span class="status-indicator-dot not-ready" id="camIndicatorDot"></span>
+                <span id="camStatusText">Camera: Access Required</span>
+              </div>
+              <span class="cam-notice-tag">Proctored Simulation</span>
+            </div>
+          </div>
+        </div>
+        <button class="btn btn-primary btn-block" id="beginInterviewBtn">🎥 Begin Rehearsal with Camera</button>
+      </div>
+
+      <!-- TAB 2: CULTURE BRIEF -->
+      <div class="tab-panel" data-panel="culture">
+        <div class="culture-brief-card" id="cultureBriefContent">
+          <!-- Injected by JS -->
+        </div>
+      </div>
+
+      <!-- TAB 3: CALL SHEET -->
+      <div class="tab-panel" data-panel="callsheet">
+        <div class="callsheet-actions-bar">
+          <p class="callsheet-note">Every question this company has actually asked, organized by round.</p>
+          <button class="btn btn-secondary btn-tiny" id="exportAnkiBtn">📥 Export for Anki (.csv)</button>
+        </div>
+        <div class="callsheet-list" id="callsheetList"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- BREATHING BREAK OVERLAY -->
+  <div class="breathing-overlay" id="breathingOverlay">
+    <div class="breathing-content">
+      <div class="breathing-circle-wrap">
+        <div class="breathing-circle" id="breathingCircle"></div>
+        <span class="breathing-seconds-counter" id="breathingTimer">10s</span>
+      </div>
+      <p class="breathing-text" id="breathingText">Breathe in...</p>
+      <p class="breathing-sub">Reset your heart rate before walking into the next question.</p>
+      <button class="btn btn-secondary btn-sm" id="skipBreathingBtn">Skip micro-break</button>
+    </div>
+  </div>
+
+  <!-- ============ SCREEN 2 — INTERVIEW ROOM ============ -->
+  <section class="screen screen-room" data-screen="2">
+    <div class="room-grid" id="roomGrid">
+
+      <!-- LEFT: interviewer -->
+      <div class="room-left">
+        <div class="interviewer-card" id="interviewerCard">
+          <div class="on-air-badge" id="onAirBadge"><span class="cue-dot cue-dot-lg"></span> ON AIR</div>
+          <div class="format-pill-tag" id="roomFormatTag">ONSITE</div>
+
+          <div class="interviewer-rig">
+            <div class="signal-ring ring-1 small"></div>
+            <div class="signal-ring ring-2 small"></div>
+            <div class="interviewer-avatar" id="interviewerAvatar">
+              <svg width="34" height="34" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="8" r="4" stroke="currentColor" stroke-width="1.5"/><path d="M4 20C4 16.13 7.58 13 12 13C16.42 13 20 16.13 20 20" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            </div>
+          </div>
+          <p class="interviewer-name" id="interviewerCompanyName">Google</p>
+          <p class="interviewer-role" id="interviewerRoleLabel">Software Engineer Panel</p>
+          <p class="interviewer-persona-badge" id="interviewerPersonaTag">Friendly HR</p>
+
+          <div class="progress-track">
+            <div class="progress-fill" id="progressFill"></div>
+          </div>
+          <p class="q-counter"><span id="qCurrent">1</span> / <span id="qTotal">6</span> questions</p>
+
+          <div class="timer-ring-wrap" id="timerRingWrap">
+            <svg class="timer-ring" viewBox="0 0 120 120">
+              <circle cx="60" cy="60" r="52" class="timer-track"/>
+              <circle cx="60" cy="60" r="52" class="timer-progress" id="timerProgress"/>
+            </svg>
+            <span class="timer-text" id="timerText">00:00</span>
+          </div>
+        </div>
+
+        <!-- CANDIDATE LIVE WEBCAM FEED -->
+        <div class="candidate-feed-card" id="candidateFeedCard">
+          <div class="candidate-video-container">
+            <video id="candidateWebcam" autoplay playsinline muted></video>
+            <div class="cam-live-indicator"><span class="cue-dot live"></span> LIVE CAM</div>
+            <div class="cam-label-tag" id="candidateLevelBadge">MID-LEVEL CANDIDATE</div>
+            <div class="cam-controls-mini">
+              <button class="cam-mini-btn" id="flipCamBtn" title="Flip / Mirror Video" type="button">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="candidate-meta-bar">
+            <div class="cand-meta-left">
+              <span class="cand-indicator-dot"></span>
+              <span class="candidate-name" id="candidateNameTag">You (Candidate)</span>
+            </div>
+            <span class="cam-status-text-live">WEBCAM ACTIVE</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- CENTER: question + answer -->
+      <div class="room-center">
+        <div class="question-top-bar">
+          <div class="question-tag" id="questionTag">TECHNICAL</div>
+          <div class="level-tag" id="questionLevelTag">MID-LEVEL</div>
+          <div class="language-tag" id="roomLangTag">EN</div>
+        </div>
+        <h2 class="question-text" id="questionText">Loading question…</h2>
+
+        <div class="room-controls">
+          <button class="icon-btn" id="speakQuestionBtn" title="Read question aloud">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M11 5L6 9H2V15H6L11 19V5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M15.5 8.5C16.5 9.5 17 10.7 17 12C17 13.3 16.5 14.5 15.5 15.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            Read aloud
+          </button>
+          <button class="icon-btn" id="skipQuestionBtn">Skip question</button>
+        </div>
+
+        <div class="answer-box">
+          <div class="answer-header">
+            <span class="answer-label">Your answer</span>
+            <div class="mic-toggle" id="micToggle">
+              <span class="mic-dot"></span>
+              <span id="micToggleLabel">Tap mic to speak</span>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 15C13.66 15 15 13.66 15 12V6C15 4.34 13.66 3 12 3C10.34 3 9 4.34 9 6V12C9 13.66 10.34 15 12 15Z" stroke="currentColor" stroke-width="1.5"/><path d="M19 11V12C19 15.87 15.87 19 12 19C8.13 19 5 15.87 5 12V11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            </div>
+          </div>
+          <textarea id="answerInput" placeholder="Speak using the mic, or type your answer here…"></textarea>
+          <div class="answer-meta">
+            <span id="liveWordCount">0 words</span>
+            <span id="liveFillerCount">0 filler words</span>
+          </div>
+        </div>
+
+        <button class="btn btn-primary btn-block" id="submitAnswerBtn">Submit Answer</button>
+      </div>
+
+      <!-- RIGHT: live feedback -->
+      <div class="room-right" id="feedbackPanel">
+        <div class="feedback-empty" id="feedbackEmpty">
+          <p>Your scorecard for this question will appear here the moment you submit.</p>
+        </div>
+
+        <div class="feedback-result" id="feedbackResult" style="display:none;">
+          <div class="feedback-header">
+            <span class="feedback-panel-title">Scorecard</span>
+            <button class="icon-btn-small" id="notesToggleBtn" title="Toggle terse interviewer shorthand notes">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M9 5H7C5.89543 5 5 5.89543 5 7V19C5 20.1046 5.89543 21 7 21H17C18.1046 21 19 20.1046 19 19V7C19 5.89543 18.1046 5 17 5H15" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M9 5C9 3.89543 9.89543 3 11 3H13C14.1046 3 15 3.89543 15 5V7H9V5Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              <span>Notes View</span>
+            </button>
+          </div>
+
+          <div class="score-gauge-wrap">
+            <svg class="score-gauge" viewBox="0 0 140 140">
+              <circle cx="70" cy="70" r="60" class="gauge-track"/>
+              <circle cx="70" cy="70" r="60" class="gauge-fill" id="gaugeFill"/>
+            </svg>
+            <div class="score-gauge-center">
+              <span class="score-num" id="scoreNum">0</span>
+              <span class="score-verdict" id="scoreVerdict">—</span>
+            </div>
+          </div>
+
+          <div class="mini-bars" id="miniBars"></div>
+
+          <!-- BENCHMARK MODEL ANSWER COMPARISON -->
+          <div class="benchmark-comparison-card" id="benchmarkComparisonCard" style="display:none;">
+            <div class="comparison-card-head" id="comparisonHeadToggle">
+              <div class="comparison-head-title">
+                <span class="comp-icon">🎯</span>
+                <span>Benchmark Model Answer</span>
+              </div>
+              <span class="comp-coverage-pill" id="compCoveragePill">0% Match</span>
+            </div>
+            <div class="comparison-card-body" id="comparisonBody">
+              <p class="comparison-summary" id="compSummaryText"></p>
+              <div class="comparison-concepts">
+                <div class="concept-group">
+                  <span class="concept-group-label text-covered">✓ Concepts Covered</span>
+                  <div class="concept-tags" id="compCoveredTags"></div>
+                </div>
+                <div class="concept-group">
+                  <span class="concept-group-label text-missed">⚠ Key Gaps to Include</span>
+                  <div class="concept-tags" id="compMissedTags"></div>
+                </div>
+              </div>
+              <div class="model-answer-preview">
+                <div class="model-answer-title">Full Model Benchmark Answer:</div>
+                <p class="model-answer-text" id="compModelAnswerText"></p>
+              </div>
+            </div>
+          </div>
+
+          <ul class="feedback-list" id="feedbackList"></ul>
+
+          <button class="btn btn-secondary btn-block" id="nextQuestionBtn">Next Question →</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SCREEN 3 — FINAL REPORT ============ -->
+  <section class="screen screen-report" data-screen="3">
+    <div class="report-wrap">
+      <div class="section-head">
+        <p class="eyebrow">// notes from the panel</p>
+        <h2 class="section-title">Your performance review</h2>
+      </div>
+
+      <div class="report-grid">
+        <div class="report-left">
+          <div class="verdict-card">
+            <span class="verdict-label" id="reportVerdictLabel">Hire</span>
+            <div class="verdict-score" id="reportOverallScore">0</div>
+            <p class="verdict-sub">Overall score across <span id="reportQCount">0</span> questions</p>
+            <div class="report-db-badge" id="reportDbBadge">
+              <span class="db-dot-live"></span>
+              <span>Saved to Firestore: <strong id="reportSessionIdText">Live</strong></span>
+            </div>
+          </div>
+
+          <!-- COMMUNITY BENCHMARK CARD -->
+          <div class="benchmark-card" id="benchmarkCard">
+            <div class="benchmark-header">
+              <span class="benchmark-badge">📊 Community Benchmark</span>
+              <span class="benchmark-percentile-val" id="benchmarkPercentileText">Top 25%</span>
+            </div>
+            <p class="benchmark-summary" id="benchmarkSummaryText">Loading benchmark…</p>
+            <div class="benchmark-track">
+              <div class="benchmark-fill" id="benchmarkFill"></div>
+              <div class="benchmark-marker" id="benchmarkMarker"></div>
+            </div>
+          </div>
+
+          <!-- RADAR CHART -->
+          <canvas id="radarCanvas" width="320" height="320"></canvas>
+          <div class="radar-legend" id="radarLegend"></div>
+
+          <!-- SESSION COMPARISON CARD -->
+          <div class="session-comparison-card" id="sessionComparisonCard">
+            <p class="comp-title">Attempt Comparison (vs. Previous Rehearsal)</p>
+            <div class="comp-deltas" id="compDeltas">
+              <!-- Injected by JS -->
+            </div>
+          </div>
+
+          <div class="session-history">
+            <p class="session-history-title">Recent Rehearsals</p>
+            <div class="session-list" id="sessionList">
+              <!-- Session history injected by JS -->
+            </div>
+          </div>
+        </div>
+
+        <div class="report-right">
+          <div class="highlight-row">
+            <div class="highlight-card strong">
+              <p class="highlight-tag">Strongest Dimension</p>
+              <p class="highlight-value" id="strongestArea">—</p>
+            </div>
+            <div class="highlight-card weak">
+              <p class="highlight-tag">Needs Polish</p>
+              <p class="highlight-value" id="weakestArea">—</p>
+            </div>
+          </div>
+
+          <div class="qa-review-header">
+            <span class="qa-review-title">Per-Question Evaluation</span>
+            <button class="icon-btn-small" id="reportNotesToggleBtn">
+              <span>Shorthand Notes</span>
+            </button>
+          </div>
+
+          <div class="qa-review" id="qaReview">
+            <!-- injected per-question breakdown -->
+          </div>
+
+          <div class="report-actions">
+            <button class="btn btn-primary" id="restartBtn">Rehearse Again</button>
+            <button class="btn btn-secondary" id="reportViewDbBtn">🗄️ Database History</button>
+            <button class="btn btn-secondary" id="shareReportBtn">🔗 Share Report</button>
+            <button class="btn btn-secondary" id="peerReviewBtn">👥 Peer Mock Mode</button>
+            <button class="btn btn-secondary" id="calendarSyncBtn">📅 Schedule Rehearsal</button>
+            <button class="btn btn-ghost" id="reportAnkiBtn">📥 Anki Flashcards</button>
+            <button class="btn btn-ghost" id="anotherCompanyBtn">Try Another Company</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<!-- ============ MODALS ============ -->
+
+<!-- 1. LINKEDIN IMPORT MODAL -->
+<div class="modal-overlay" id="linkedinModal">
+  <div class="modal-card">
+    <button class="modal-close" id="closeLinkedInModal">✕</button>
+    <div class="modal-header">
+      <div class="modal-logo" style="background:#0A66C2; color:#fff;">in</div>
+      <div>
+        <h3>Import LinkedIn Profile / Bio</h3>
+        <p class="modal-focus">Paste your profile headline, about section, or skills list to customize question matching.</p>
+      </div>
+    </div>
+    <div class="field-row">
+      <label>Paste your LinkedIn profile text or bio summary:</label>
+      <textarea id="linkedinInput" class="custom-textarea" rows="6" placeholder="e.g. Senior Software Engineer with 4 years experience in Python, Distributed Systems, AWS, and React. Passionate about system design and high-throughput microservices..."></textarea>
+    </div>
+    <div class="linkedin-preview" id="linkedinPreview" style="display:none;">
+      <p class="preview-label">Detected Target Roles & Focus Areas:</p>
+      <div class="detected-chips" id="detectedChips"></div>
+    </div>
+    <button class="btn btn-primary btn-block" id="parseLinkedInBtn">Extract & Personalize Rehearsal</button>
+  </div>
+</div>
+
+<!-- 2. CUSTOM QUESTION BANK MODAL -->
+<div class="modal-overlay" id="customBankModal">
+  <div class="modal-card">
+    <button class="modal-close" id="closeCustomBankModal">✕</button>
+    <div class="modal-header">
+      <div class="modal-logo" style="background:var(--signal); color:#0A0B0F;">📝</div>
+      <div>
+        <h3>Custom Question Bank</h3>
+        <p class="modal-focus">Paste actual past interview questions (e.g. Glassdoor, LeetCode discussion, personal notes) to rehearse against directly.</p>
+      </div>
+    </div>
+    <div class="field-row">
+      <label>Target Company / Round Name</label>
+      <input type="text" id="customCompanyName" class="custom-input" placeholder="e.g. Stripe — Infrastructure Round" />
+    </div>
+    <div class="field-row">
+      <label>Role</label>
+      <input type="text" id="customRoleName" class="custom-input" placeholder="e.g. Backend Engineer" />
+    </div>
+    <div class="field-row">
+      <label>Paste Questions (one per line, or JSON format):</label>
+      <textarea id="customQuestionsInput" class="custom-textarea" rows="8" placeholder="How do you handle idempotency in stripe payment webhooks?
+Explain the trade-offs of using Redis vs DynamoDB.
+Tell me about a time you resolved an outage with ambiguous logs.
+Describe your approach to designing a high-concurrency rate limiter."></textarea>
+    </div>
+    <button class="btn btn-primary btn-block" id="saveCustomBankBtn">Save & Start Custom Mock</button>
+  </div>
+</div>
+
+<!-- 3. COUNTDOWN MODAL -->
+<div class="modal-overlay" id="countdownModal">
+  <div class="modal-card">
+    <button class="modal-close" id="closeCountdownModal">✕</button>
+    <div class="modal-header">
+      <div class="modal-logo" style="background:var(--spotlight); color:#0A0B0F;">📅</div>
+      <div>
+        <h3>Set Upcoming Interview Date</h3>
+        <p class="modal-focus">GreenRoom will track your countdown and help you schedule regular mock sessions.</p>
+      </div>
+    </div>
+    <div class="field-row">
+      <label>Target Company</label>
+      <select id="countdownCompanySelect" class="custom-select"></select>
+    </div>
+    <div class="field-row">
+      <label>Interview Date & Time</label>
+      <input type="datetime-local" id="countdownDateInput" class="custom-input" />
+    </div>
+    <div class="field-row">
+      <label>Target Role</label>
+      <input type="text" id="countdownRoleInput" class="custom-input" placeholder="Software Engineer" />
+    </div>
+    <button class="btn btn-primary btn-block" id="saveCountdownBtn">Save Countdown & Sync</button>
+  </div>
+</div>
+
+<!-- 4. SHARE REPORT / MENTOR REVIEW MODAL -->
+<div class="modal-overlay" id="shareModal">
+  <div class="modal-card">
+    <button class="modal-close" id="closeShareModal">✕</button>
+    <div class="modal-header">
+      <div class="modal-logo" style="background:var(--signal); color:#0A0B0F;">🔗</div>
+      <div>
+        <h3>Share Performance Report</h3>
+        <p class="modal-focus">Send a read-only scorecard link to your mentor, senior, or study buddy.</p>
+      </div>
+    </div>
+    <div class="field-row">
+      <label>Shareable Read-Only Link (self-contained, no login required):</label>
+      <div class="copy-input-row">
+        <input type="text" id="shareUrlInput" class="custom-input" readonly />
+        <button class="btn btn-secondary btn-sm" id="copyShareUrlBtn">Copy Link</button>
+      </div>
+    </div>
+    <div class="field-row">
+      <label>Formatted Mentor Summary (Markdown / WhatsApp format):</label>
+      <textarea id="mentorSummaryText" class="custom-textarea" rows="6" readonly></textarea>
+      <button class="btn btn-ghost btn-sm" style="margin-top:8px;" id="copyMentorSummaryBtn">📋 Copy Markdown</button>
+    </div>
+  </div>
+</div>
+
+<!-- 5. PEER MOCK REVIEW MODAL -->
+<div class="modal-overlay" id="peerModal">
+  <div class="modal-card">
+    <button class="modal-close" id="closePeerModal">✕</button>
+    <div class="modal-header">
+      <div class="modal-logo" style="background:var(--cue); color:#fff;">👥</div>
+      <div>
+        <h3>Peer Mock Review Mode</h3>
+        <p class="modal-focus">Let a partner or mentor review your transcribed answers and leave manual notes alongside AI scores.</p>
+      </div>
+    </div>
+    <div class="peer-qa-list" id="peerQaList">
+      <!-- Injected per question transcript & manual comment box -->
+    </div>
+    <button class="btn btn-primary btn-block" id="savePeerNotesBtn">Save Peer Feedback</button>
+  </div>
+</div>
+
+<!-- 6. CAMERA REQUIRED MODAL -->
+<div class="modal-overlay" id="cameraBlockModal">
+  <div class="modal-card modal-card-alert" id="cameraBlockCard">
+    <button class="modal-close" id="closeCameraBlockModal">✕</button>
+    <div class="modal-header">
+      <div class="modal-logo" style="background:var(--cue); color:#fff;">📷</div>
+      <div>
+        <h3 style="color:var(--text);">Camera Access Required</h3>
+        <p class="modal-focus" style="color:var(--cue);">Interview cannot start without webcam permission</p>
+      </div>
+    </div>
+    <div class="cam-alert-body">
+      <p class="cam-alert-desc">
+        GreenRoom operates as a realistic, proctored mock interview room. In order to begin your rehearsal session, an active camera feed is required by the system.
+      </p>
+      <div class="cam-alert-steps">
+        <p class="cam-steps-title">To proceed with your interview:</p>
+        <ul class="cam-steps-list">
+          <li>Ensure your webcam is connected and not in use by another app.</li>
+          <li>Click <strong>Allow</strong> on your browser's camera permission prompt.</li>
+          <li>If blocked previously, click the lock/camera icon in your browser URL bar and reset permissions.</li>
+        </ul>
+      </div>
+      <div class="cam-alert-actions">
+        <button class="btn btn-primary btn-block" id="retryCameraBtn">🎥 Grant Camera Access & Start Interview</button>
+        <button class="btn btn-secondary btn-block" id="cancelCameraBlockBtn" style="margin-top:10px;">Return to Rehearsal Setup</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 7. DATABASE & PERFORMANCE RECORDS MODAL -->
+<div class="modal-overlay" id="dbRecordsModal">
+  <div class="modal-card modal-large">
+    <button class="modal-close" id="closeDbRecordsModal">✕</button>
+    <div class="modal-header">
+      <div class="modal-logo" style="background:var(--signal); color:#0A0B0F;">🗄️</div>
+      <div>
+        <h3>Candidate Database & Performance Vault</h3>
+        <p class="modal-focus">Live Cloud Firestore database — storing user profiles, interview responses, scoring records, and question benchmark answers.</p>
+      </div>
+    </div>
+
+    <div class="db-header-bar">
+      <div class="db-meta-info">
+        <span class="db-status-chip"><span class="db-dot-live"></span> Firestore Connected</span>
+        <span>DB ID: <code style="color:var(--signal);">ai-studio-aiinterviewer-...</code></span>
+        <span>Collections: <code>questions, users, interviews, responses</code></span>
+      </div>
+      <button class="btn btn-tiny btn-ghost" id="refreshDbBtn">↻ Refresh Data</button>
+    </div>
+
+    <!-- Candidate Profile Row -->
+    <div class="cand-profile-row">
+      <div style="flex:1; min-width:180px;">
+        <label style="font-size:.7rem; color:var(--muted); display:block; margin-bottom:4px;">Candidate Name</label>
+        <input type="text" id="dbCandidateName" placeholder="Your Name" />
+      </div>
+      <div style="flex:1; min-width:180px;">
+        <label style="font-size:.7rem; color:var(--muted); display:block; margin-bottom:4px;">Target Engineering Role</label>
+        <input type="text" id="dbCandidateRole" placeholder="Software Engineer" />
+      </div>
+      <div style="display:flex; align-items:flex-end;">
+        <button class="btn btn-sm btn-secondary" id="dbSaveProfileBtn">Save Profile</button>
+      </div>
+    </div>
+
+    <!-- Lifetime Performance Stats -->
+    <div class="db-stats-grid">
+      <div class="db-stat-box">
+        <div class="db-stat-val" id="dbTotalInterviews">0</div>
+        <div class="db-stat-lbl">Rehearsals Stored</div>
+      </div>
+      <div class="db-stat-box">
+        <div class="db-stat-val" id="dbAvgScore">0%</div>
+        <div class="db-stat-lbl">Lifetime Avg Score</div>
+      </div>
+      <div class="db-stat-box">
+        <div class="db-stat-val" id="dbQuestionsAnswered">0</div>
+        <div class="db-stat-lbl">Answers Evaluated</div>
+      </div>
+      <div class="db-stat-box">
+        <div class="db-stat-val" id="dbBenchmarkCoverage">0%</div>
+        <div class="db-stat-lbl">Model Benchmark Match</div>
+      </div>
+    </div>
+
+    <!-- Stored Interview Sessions List -->
+    <div class="db-section-title">
+      <span>Stored Interview Sessions in Database</span>
+      <span style="font-size:.75rem; color:var(--muted); font-family:var(--font-mono);" id="dbSessionCountText">0 records</span>
+    </div>
+
+    <div class="history-items-list" id="dbHistoryList">
+      <p style="color:var(--muted); font-size:.85rem; padding: 12px 0;">No interview records stored yet. Complete an interview rehearsal to see your performance record here.</p>
+    </div>
+
+    <!-- Selected Session Deep-Dive -->
+    <div class="session-detail-view" id="dbSessionDetail" style="display:none;">
+      <div class="session-detail-header">
+        <h4 id="detailSessionTitle" style="color:var(--text); font-size:.95rem;">Session Details</h4>
+        <button class="btn btn-tiny btn-ghost" id="closeDetailBtn">Close Details</button>
+      </div>
+      <div class="session-qa-list" id="detailQaList"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 8. CANDIDATE AUTH MODAL (LOGIN & REGISTRATION) -->
+<div class="modal-overlay" id="authModal">
+  <div class="modal-card auth-modal-card">
+    <button class="modal-close" id="closeAuthModal">✕</button>
+    <div class="modal-header">
+      <div class="modal-logo" style="background:var(--spotlight); color:#0A0B0F;">👤</div>
+      <div>
+        <h3 id="authModalTitle">Candidate Access & Account</h3>
+        <p class="modal-focus">Sign in or create your profile to sync rehearsal recordings, benchmark scores, and custom questions across devices.</p>
+      </div>
+    </div>
+
+    <!-- Tab Switcher -->
+    <div class="auth-tabs">
+      <button class="auth-tab active" id="tabSignInBtn">
+        <span>🔑</span> Sign In
+      </button>
+      <button class="auth-tab" id="tabRegisterBtn">
+        <span>📝</span> Create Account
+      </button>
+    </div>
+
+    <!-- ================= TAB 1: SIGN IN ================= -->
+    <div class="auth-pane" id="authLoginPane">
+      <form class="auth-form" id="loginForm" onsubmit="return false;">
+        <div class="auth-error-banner" id="loginErrorBanner" style="display:none;">
+          <span>⚠️</span> <span id="loginErrorText"></span>
+        </div>
+
+        <div class="auth-field">
+          <label class="auth-label" for="loginEmail">Email Address <span class="auth-req">*</span></label>
+          <input type="email" id="loginEmail" class="auth-input" placeholder="candidate@example.com" required autocomplete="email" />
+        </div>
+
+        <div class="auth-field">
+          <label class="auth-label" for="loginPassword">Password <span class="auth-req">*</span></label>
+          <div class="auth-pwd-wrap">
+            <input type="password" id="loginPassword" class="auth-input" placeholder="Enter your password" required autocomplete="current-password" />
+            <button type="button" class="auth-toggle-pwd" id="toggleLoginPwd" title="Show/Hide password">👁️</button>
+          </div>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; font-size:.78rem; color:var(--muted);">
+          <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+            <input type="checkbox" id="loginRememberMe" checked /> Remember this candidate on this device
+          </label>
+        </div>
+
+        <button type="submit" class="btn btn-primary btn-block" id="submitLoginBtn" style="margin-top:4px;">
+          <span>Sign In to GreenRoom</span>
+        </button>
+      </form>
+
+      <div class="auth-divider">OR CONTINUE WITH</div>
+
+      <div class="social-auth-grid">
+        <button type="button" class="btn-social btn-social-google" id="googleLoginBtn" title="Sign in with Google">
+          <svg viewBox="0 0 24 24"><path fill="#EA4335" d="M12 5c1.6 0 3 .6 4.1 1.7l3.1-3.1C17.3 1.8 14.8 1 12 1 7.5 1 3.7 3.6 1.9 7.3l3.7 2.9C6.5 7.4 9 5 12 5z"/><path fill="#4285F4" d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.6h6.5c-.3 1.5-1.1 2.8-2.4 3.7l3.7 2.9c2.2-2 3.7-5 3.7-8.9z"/><path fill="#FBBC05" d="M5.6 14.8c-.2-.7-.4-1.5-.4-2.3s.2-1.6.4-2.3L1.9 7.3C.7 9.7 0 12.3 0 15.1s.7 5.4 1.9 7.8l3.7-2.9c-.2-.7-.4-1.5-.4-2.3z"/><path fill="#34A853" d="M12 23.5c3.2 0 6-1.1 8-3l-3.7-2.9c-1.1.7-2.5 1.2-4.3 1.2-3 0-5.5-2-6.4-4.8L1.9 16.9C3.7 20.6 7.5 23.5 12 23.5z"/></svg>
+          <span>Google</span>
+        </button>
+        <button type="button" class="btn-social btn-social-linkedin" id="linkedinLoginBtn" title="Sign in with LinkedIn">
+          <svg viewBox="0 0 24 24"><path fill="#0A66C2" d="M19 3a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14m-.5 15.5v-5.3a3.26 3.26 0 0 0-3.26-3.26c-.85 0-1.84.52-2.28 1.3v-1.11h-2.79v8.37h2.79v-4.93c0-.77.62-1.4 1.39-1.4a1.4 1.4 0 0 1 1.4 1.4v4.93h2.75M6.88 8.56a1.68 1.68 0 0 0 1.68-1.68c0-.93-.75-1.69-1.68-1.69a1.69 1.69 0 0 0-1.69 1.69c0 .93.76 1.68 1.69 1.68m1.39 9.94v-8.37H5.5v8.37h2.77z"/></svg>
+          <span>LinkedIn</span>
+        </button>
+        <button type="button" class="btn-social btn-social-github" id="githubLoginBtn" title="Sign in with GitHub">
+          <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 2A10 10 0 0 0 2 12c0 4.42 2.87 8.17 6.84 9.5.5.08.66-.23.66-.5v-1.69c-2.77.6-3.36-1.34-3.36-1.34-.46-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.87 1.52 2.34 1.07 2.91.83.1-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.92 0-1.11.38-2 1.03-2.71-.1-.25-.45-1.29.1-2.64 0 0 .84-.27 2.75 1.02.79-.22 1.65-.33 2.5-.33.85 0 1.71.11 2.5.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.35.2 2.39.1 2.64.65.71 1.03 1.6 1.03 2.71 0 3.82-2.34 4.66-4.57 4.91.36.31.69.92.69 1.85V21c0 .27.16.59.67.5C19.14 20.16 22 16.42 22 12A10 10 0 0 0 12 2z"/></svg>
+          <span>GitHub</span>
+        </button>
+      </div>
+
+      <p class="auth-footer-switch">
+        New candidate? <button type="button" class="auth-footer-link" id="switchToRegLink">Register with mandatory details</button>
+      </p>
+    </div>
+
+    <!-- ================= TAB 2: REGISTER (WITH MANDATORY DETAILS) ================= -->
+    <div class="auth-pane" id="authRegisterPane" style="display:none;">
+      <form class="auth-form" id="registerForm" onsubmit="return false;">
+        <div class="auth-error-banner" id="registerErrorBanner" style="display:none;">
+          <span>⚠️</span> <span id="registerErrorText"></span>
+        </div>
+
+        <div class="auth-form-grid">
+          <!-- 1. Full Name (Mandatory) -->
+          <div class="auth-field">
+            <label class="auth-label" for="regName">Full Name <span class="auth-req">*</span></label>
+            <input type="text" id="regName" class="auth-input" placeholder="e.g. Sangeeta Ojha" required autocomplete="name" />
+          </div>
+
+          <!-- 2. Email Address (Mandatory) -->
+          <div class="auth-field">
+            <label class="auth-label" for="regEmail">Email Address <span class="auth-req">*</span></label>
+            <input type="email" id="regEmail" class="auth-input" placeholder="sangeeta@example.com" required autocomplete="email" />
+          </div>
+        </div>
+
+        <div class="auth-form-grid">
+          <!-- 3. Password (Mandatory) -->
+          <div class="auth-field">
+            <label class="auth-label" for="regPassword">Password (min 6 chars) <span class="auth-req">*</span></label>
+            <div class="auth-pwd-wrap">
+              <input type="password" id="regPassword" class="auth-input" placeholder="Create password" required minlength="6" autocomplete="new-password" />
+              <button type="button" class="auth-toggle-pwd" id="toggleRegPwd" title="Show/Hide password">👁️</button>
+            </div>
+          </div>
+
+          <!-- 4. Target Role (Mandatory) -->
+          <div class="auth-field">
+            <label class="auth-label" for="regRole">Target Role <span class="auth-req">*</span></label>
+            <select id="regRole" class="auth-select" required>
+              <option value="Machine Learning / AI Engineer">Machine Learning / AI Engineer</option>
+              <option value="Software Engineer" selected>Software Engineer</option>
+              <option value="Frontend Engineer">Frontend Engineer</option>
+              <option value="Backend Engineer">Backend Engineer</option>
+              <option value="Full Stack Engineer">Full Stack Engineer</option>
+              <option value="DevOps / SRE / Cloud Engineer">DevOps / SRE / Cloud Engineer</option>
+              <option value="Data Scientist">Data Scientist</option>
+              <option value="Mobile Engineer (Android/iOS)">Mobile Engineer (Android/iOS)</option>
+              <option value="Product Manager">Product Manager</option>
+              <option value="QA / SDET">QA / SDET</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="auth-form-grid">
+          <!-- 5. Dream / Target Company (Mandatory) -->
+          <div class="auth-field">
+            <label class="auth-label" for="regCompany">Target Company <span class="auth-req">*</span></label>
+            <select id="regCompany" class="auth-select" required>
+              <option value="Google" selected>Google</option>
+              <option value="Amazon">Amazon</option>
+              <option value="Microsoft">Microsoft</option>
+              <option value="Meta">Meta</option>
+              <option value="Apple">Apple</option>
+              <option value="Netflix">Netflix</option>
+              <option value="Adobe">Adobe</option>
+              <option value="Oracle">Oracle</option>
+              <option value="Salesforce">Salesforce</option>
+              <option value="IBM">IBM</option>
+              <option value="Goldman Sachs">Goldman Sachs</option>
+              <option value="Flipkart">Flipkart</option>
+              <option value="Zomato">Zomato</option>
+              <option value="Swiggy">Swiggy</option>
+              <option value="Paytm">Paytm</option>
+              <option value="TCS">TCS</option>
+              <option value="Infosys">Infosys</option>
+              <option value="Wipro">Wipro</option>
+              <option value="Accenture">Accenture</option>
+              <option value="Cognizant">Cognizant</option>
+            </select>
+          </div>
+
+          <!-- 6. Experience Level (Mandatory) -->
+          <div class="auth-field">
+            <label class="auth-label" for="regLevel">Experience Level <span class="auth-req">*</span></label>
+            <select id="regLevel" class="auth-select" required>
+              <option value="entry">Intern / Entry (0-1 yrs)</option>
+              <option value="mid" selected>Mid-Level (2-4 yrs)</option>
+              <option value="senior">Senior (5-8 yrs)</option>
+              <option value="lead">Lead / Staff (8+ yrs)</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- 7. Preferred Language -->
+        <div class="auth-field">
+          <label class="auth-label" for="regLanguage">Preferred Rehearsal Language</label>
+          <select id="regLanguage" class="auth-select">
+            <option value="english" selected>English (Standard Interview Mode)</option>
+            <option value="hinglish">Hinglish (Bilingual Technical Rehearsal)</option>
+          </select>
+        </div>
+
+        <button type="submit" class="btn btn-primary btn-block" id="submitRegisterBtn" style="margin-top:6px;">
+          <span>Create Candidate Profile & Start Rehearsing</span>
+        </button>
+      </form>
+
+      <div class="auth-divider">OR REGISTER WITH SOCIAL ACCOUNT</div>
+
+      <div class="social-auth-grid">
+        <button type="button" class="btn-social btn-social-google" id="googleRegBtn" title="Register with Google">
+          <svg viewBox="0 0 24 24"><path fill="#EA4335" d="M12 5c1.6 0 3 .6 4.1 1.7l3.1-3.1C17.3 1.8 14.8 1 12 1 7.5 1 3.7 3.6 1.9 7.3l3.7 2.9C6.5 7.4 9 5 12 5z"/><path fill="#4285F4" d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.6h6.5c-.3 1.5-1.1 2.8-2.4 3.7l3.7 2.9c2.2-2 3.7-5 3.7-8.9z"/><path fill="#FBBC05" d="M5.6 14.8c-.2-.7-.4-1.5-.4-2.3s.2-1.6.4-2.3L1.9 7.3C.7 9.7 0 12.3 0 15.1s.7 5.4 1.9 7.8l3.7-2.9c-.2-.7-.4-1.5-.4-2.3z"/><path fill="#34A853" d="M12 23.5c3.2 0 6-1.1 8-3l-3.7-2.9c-1.1.7-2.5 1.2-4.3 1.2-3 0-5.5-2-6.4-4.8L1.9 16.9C3.7 20.6 7.5 23.5 12 23.5z"/></svg>
+          <span>Google</span>
+        </button>
+        <button type="button" class="btn-social btn-social-linkedin" id="linkedinRegBtn" title="Register with LinkedIn">
+          <svg viewBox="0 0 24 24"><path fill="#0A66C2" d="M19 3a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14m-.5 15.5v-5.3a3.26 3.26 0 0 0-3.26-3.26c-.85 0-1.84.52-2.28 1.3v-1.11h-2.79v8.37h2.79v-4.93c0-.77.62-1.4 1.39-1.4a1.4 1.4 0 0 1 1.4 1.4v4.93h2.75M6.88 8.56a1.68 1.68 0 0 0 1.68-1.68c0-.93-.75-1.69-1.68-1.69a1.69 1.69 0 0 0-1.69 1.69c0 .93.76 1.68 1.69 1.68m1.39 9.94v-8.37H5.5v8.37h2.77z"/></svg>
+          <span>LinkedIn</span>
+        </button>
+        <button type="button" class="btn-social btn-social-github" id="githubRegBtn" title="Register with GitHub">
+          <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 2A10 10 0 0 0 2 12c0 4.42 2.87 8.17 6.84 9.5.5.08.66-.23.66-.5v-1.69c-2.77.6-3.36-1.34-3.36-1.34-.46-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.87 1.52 2.34 1.07 2.91.83.1-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.92 0-1.11.38-2 1.03-2.71-.1-.25-.45-1.29.1-2.64 0 0 .84-.27 2.75 1.02.79-.22 1.65-.33 2.5-.33.85 0 1.71.11 2.5.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.35.2 2.39.1 2.64.65.71 1.03 1.6 1.03 2.71 0 3.82-2.34 4.66-4.57 4.91.36.31.69.92.69 1.85V21c0 .27.16.59.67.5C19.14 20.16 22 16.42 22 12A10 10 0 0 0 12 2z"/></svg>
+          <span>GitHub</span>
+        </button>
+      </div>
+
+      <p class="auth-footer-switch">
+        Already registered? <button type="button" class="auth-footer-link" id="switchToLoginLink">Sign In to your account</button>
+      </p>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="js/main.js"></script>
+</body>
+</html>
