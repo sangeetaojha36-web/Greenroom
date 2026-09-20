@@ -3,6 +3,7 @@ __pycache__
 *.pyc
 .git
 .DS_Store
-app.py
 backend
+Greenroom-main
 requirements.txt
+*.py

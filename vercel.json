@@ -1,5 +1,6 @@
 {
   "version": 2,
+  "framework": null,
   "cleanUrls": true,
   "functions": {
     "api/**/*.js": {
@@ -15,10 +16,7 @@
     {
       "source": "/api/(.*)",
       "destination": "/api/index.js?path=/api/$1"
-    },
-    {
-      "source": "/((?!api/).*)",
-      "destination": "/index.html"
     }
   ]
 }
+
