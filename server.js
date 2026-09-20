@@ -57,10 +57,13 @@ const __dirname = path.dirname(__filename);
 
 function getFrontendDir() {
   const candidates = [
+    path.join(__dirname, "public"),
+    path.join(process.cwd(), "public"),
     path.join(__dirname, "frontend"),
     path.join(process.cwd(), "frontend"),
     path.join(process.cwd(), "Greenroom-main", "frontend"),
-    path.join(__dirname, "..", "frontend")
+    path.join(__dirname, "..", "frontend"),
+    path.join(__dirname, "..", "public")
   ];
   for (const c of candidates) {
     if (fs.existsSync(c)) return c;
@@ -76,8 +79,28 @@ app.use(cors());
 app.use(express.json({ limit: "25mb" }));
 app.use(express.urlencoded({ extended: true, limit: "25mb" }));
 
-// API route normalizer: handles serverless environments where /api prefix may be stripped or present
+// API route normalizer: handles serverless environments (Vercel, AWS Lambda, Cloud Run, etc.)
 app.use((req, res, next) => {
+  // Support Vercel serverless rewrite paths and query parameters
+  if (req.query && req.query.path) {
+    try {
+      const urlObj = new URL(req.url, "http://localhost");
+      urlObj.searchParams.delete("path");
+      const remainingQuery = urlObj.searchParams.toString();
+      req.url = req.query.path + (remainingQuery ? "?" + remainingQuery : "");
+    } catch (e) {
+      req.url = req.query.path;
+    }
+  } else if (req.headers["x-vercel-matched-path"]) {
+    const vPath = req.headers["x-vercel-matched-path"];
+    if (vPath.startsWith("/api") && !vPath.includes("api/index") && !vPath.includes("api/[...slug]")) {
+      req.url = vPath;
+    }
+  } else if (req.url.startsWith("/api/index.js") || req.url.startsWith("/api/[...slug]")) {
+    req.url = req.url.replace(/^\/api\/(index\.js|\[\.\.\.slug\](\.js)?)/, "/api");
+  }
+
+  // Ensure /api prefix if stripped by reverse proxy
   if (!req.url.startsWith("/api") && (
     req.url.startsWith("/companies") ||
     req.url.startsWith("/company") ||
