@@ -1830,6 +1830,64 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   border-color: #f0f6fc;
 }
 
+/* Social Quick Connect Card */
+.social-quick-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  margin: 10px 0;
+  transition: border-color .2s;
+}
+.social-quick-card:hover {
+  border-color: rgba(255, 176, 32, 0.4);
+}
+.social-quick-avatar {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: var(--spotlight);
+  color: #0A0B0F;
+  font-weight: 700;
+  font-size: 1.1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.social-quick-info {
+  flex: 1;
+  text-align: left;
+  overflow: hidden;
+}
+.social-quick-name {
+  font-size: .92rem;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+.social-quick-email {
+  font-size: .75rem;
+  color: var(--muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+.social-quick-badge {
+  font-size: .65rem;
+  font-family: var(--font-mono);
+  background: rgba(34, 197, 94, 0.15);
+  color: #4ade80;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  padding: 3px 8px;
+  border-radius: 4px;
+}
+
 .auth-footer-switch {
   text-align: center;
   margin-top: 12px;
