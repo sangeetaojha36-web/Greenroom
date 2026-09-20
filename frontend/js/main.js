@@ -48,6 +48,8 @@ const state = {
   searchQuery: "",
   weakSpots: [],
   upcomingInterview: null,
+  recommendedCompanies: JSON.parse(localStorage.getItem("gr_recommended_companies") || "[]"),
+  companyFilter: "all",
   achievements: {
     first_interview: false,
     ninety_plus_score: false,
@@ -442,81 +444,538 @@ function extractKeywordsFromQuestion(qText){
 }
 
 /* -------------------------------------------------------------------------
-   LinkedIn / Profile Text Parser
+   LinkedIn / Profile Text & Bio Parser
    ------------------------------------------------------------------------- */
-function parseLinkedInProfile(text, autoNavigate = true){
-  if (!text || text.trim().length < 3) {
-    if (autoNavigate) toast("Please paste your LinkedIn headline, bio, or skills list.");
+let currentParsedProfile = null;
+
+function renderDetectedSkillsChips(skills) {
+  const container = $("#detectedChips");
+  if (!container) return;
+  const badge = $("#skillCountBadge");
+  if (!skills || !skills.length) {
+    container.innerHTML = `<span style="font-size:.75rem; color:var(--muted); font-style:italic;">No skills detected yet. Type in the box below to add skills.</span>`;
+    if (badge) badge.textContent = "0 skills";
+    return;
+  }
+  if (badge) badge.textContent = `${skills.length} skills`;
+  container.innerHTML = skills.map((sk, idx) => `
+    <span class="detected-chip" data-index="${idx}">
+      <span>⚡ ${escapeHtml(sk)}</span>
+      <button type="button" class="remove-chip-btn" data-skill="${escapeHtml(sk)}" title="Remove skill">✕</button>
+    </span>
+  `).join("");
+
+  container.querySelectorAll(".remove-chip-btn").forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const skToRemove = btn.dataset.skill;
+      if (currentParsedProfile && currentParsedProfile.skills) {
+        currentParsedProfile.skills = currentParsedProfile.skills.filter(s => s !== skToRemove);
+        renderDetectedSkillsChips(currentParsedProfile.skills);
+        refreshProfileRecommendations();
+      }
+    };
+  });
+}
+
+function renderMatchedCompaniesChips(companies) {
+  const container = $("#previewMatchedCompanies");
+  const countBadge = $("#recCountBadge");
+  if (!container) return;
+
+  if (!companies || !companies.length) {
+    container.innerHTML = `<div style="grid-column:1/-1; padding:16px; text-align:center; color:var(--muted); font-size:.78rem;">Matches standard tech company question pools. Add skills or role to see specialized recommendations.</div>`;
+    if (countBadge) countBadge.textContent = "0 Matches";
     return;
   }
 
+  if (countBadge) countBadge.textContent = `${companies.length} Matches`;
+
+  container.innerHTML = companies.map(c => {
+    const accent = c.accent || "var(--spotlight)";
+    const matchPct = c.match_percent || 90;
+    const fitLabel = c.experience_fit || `${c.difficulty || 'Tier 1'} Bar Alignment`;
+    const skillsList = Array.isArray(c.matching_skills) ? c.matching_skills : [];
+
+    return `
+      <div class="recommended-company-card" style="border-top: 3px solid ${accent};">
+        <div class="rec-card-header">
+          <div class="rec-card-company">
+            <div class="rec-card-logo" style="background:${accent};">${escapeHtml(c.name[0])}</div>
+            <div>
+              <div class="rec-card-name">${escapeHtml(c.name)}</div>
+              <span class="rec-card-fit">${escapeHtml(fitLabel)}</span>
+            </div>
+          </div>
+          <span class="rec-match-badge">🎯 ${matchPct}% Match</span>
+        </div>
+
+        <div class="rec-card-reason">${escapeHtml(c.reason || 'Strong technical and seniority bar match.')}</div>
+
+        ${skillsList.length > 0 ? `
+          <div class="rec-card-skills">
+            ${skillsList.map(s => `<span class="rec-skill-tag">✓ ${escapeHtml(s)}</span>`).join("")}
+          </div>
+        ` : ''}
+
+        <div class="rec-card-actions">
+          <button type="button" class="btn btn-primary btn-xs rec-rehearse-btn" data-company-id="${c.id}" data-role="${escapeHtml(c.recommended_role || '')}">
+            <span>🎯 Rehearse with ${escapeHtml(c.name)}</span>
+          </button>
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  // Attach one-click rehearse action to each card
+  container.querySelectorAll(".rec-rehearse-btn").forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const compId = btn.dataset.companyId;
+      const recRole = btn.dataset.role;
+      applyImportedProfile();
+      const targetCompany = state.companies.find(c => c.id === compId) || state.customBanks.find(c => c.id === compId);
+      if (targetCompany) {
+        if (recRole) state.selectedRole = recRole;
+        openSetupModal(targetCompany);
+      }
+    };
+  });
+}
+
+let _recDebounceTimer = null;
+async function refreshProfileRecommendations() {
+  if (!currentParsedProfile) return;
+  clearTimeout(_recDebounceTimer);
+  _recDebounceTimer = setTimeout(async () => {
+    const role = $("#previewRoleSelect")?.value || currentParsedProfile.target_role || "Software Engineer";
+    const activeLvlBtn = $("#previewLevelGroup .chip-mini.active");
+    const level = activeLvlBtn?.dataset.lvl || currentParsedProfile.experience_level || "mid";
+    const skills = currentParsedProfile.skills || [];
+    const years = currentParsedProfile.years_of_experience || null;
+
+    try {
+      const res = await fetch(`${API}/api/recommend-companies`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role, skills, level, years })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.ok && Array.isArray(data.recommendations) && data.recommendations.length > 0) {
+          currentParsedProfile.recommended_companies = data.recommendations.slice(0, 5);
+          renderMatchedCompaniesChips(currentParsedProfile.recommended_companies);
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn("Dynamic recommendation refresh warning:", err);
+    }
+
+    if (currentParsedProfile.recommended_companies) {
+      renderMatchedCompaniesChips(currentParsedProfile.recommended_companies);
+    }
+  }, 250);
+}
+
+function parseBioClientFallback(rawText) {
+  const text = (rawText || "").trim();
   const lower = text.toLowerCase();
-  const detectedSkills = [];
-  const detectedRoles = [];
+  let name = "Candidate";
+
+  const urlMatch = text.match(/(?:https?:\/\/)?(?:www\.)?linkedin\.com\/in\/([a-zA-Z0-9_-]+)/i);
+  if (urlMatch && urlMatch[1]) {
+    const slug = urlMatch[1].replace(/[-_]/g, " ").trim();
+    name = slug.split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+  } else {
+    const nameMatch = text.match(/(?:name|candidate|profile)\s*[:\-]\s*([A-Za-z\s.'-]{2,40})/i);
+    if (nameMatch && nameMatch[1].trim()) {
+      name = nameMatch[1].trim();
+    } else {
+      const firstLine = text.split("\n")[0].trim();
+      if (/^[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){1,3}$/.test(firstLine) && firstLine.length < 35 && !/developer|engineer|resume/i.test(firstLine)) {
+        name = firstLine;
+      }
+    }
+  }
+
+  let level = "mid";
+  if (lower.includes("senior") || lower.includes("sr.") || lower.includes("lead") || lower.includes("staff")) level = "senior";
+  else if (lower.includes("junior") || lower.includes("entry") || lower.includes("intern")) level = "junior";
+
+  const roles = [];
+  if (lower.includes("frontend") || lower.includes("react")) roles.push("Frontend Engineer");
+  if (lower.includes("backend") || lower.includes("node") || lower.includes("java")) roles.push("Backend Engineer");
+  if (lower.includes("devops") || lower.includes("sre") || lower.includes("cloud")) roles.push("DevOps Engineer");
+  if (lower.includes("data scientist") || lower.includes("machine learning")) roles.push("Data Scientist");
+  if (lower.includes("data analyst") || lower.includes("tableau")) roles.push("Data Analyst");
+  if (lower.includes("product manager") || lower.includes("pm")) roles.push("Product Manager");
+  if (lower.includes("qa") || lower.includes("test")) roles.push("QA Engineer");
+  if (!roles.length || lower.includes("software") || lower.includes("engineer")) roles.unshift("Software Engineer");
 
   const skillDict = [
-    "python", "javascript", "typescript", "react", "node", "java", "c++", "golang", "aws", "gcp", "azure", "docker",
-    "kubernetes", "sql", "postgresql", "mongodb", "machine learning", "distributed systems", "system design",
-    "nosql", "redis", "graphql", "microservices", "ci/cd", "product management", "analytics", "data engineering", "spring boot"
+    "Python", "JavaScript", "TypeScript", "React", "Next.js", "Node.js", "Express", "Java", "Spring Boot",
+    "SQL", "PostgreSQL", "MongoDB", "Redis", "Kafka", "AWS", "GCP", "Azure", "Docker", "Kubernetes",
+    "System Design", "Distributed Systems", "Microservices", "Machine Learning", "REST", "GraphQL", "Agile"
   ];
-
+  const detectedSkills = [];
   skillDict.forEach(sk => {
-    if (lower.includes(sk)) detectedSkills.push(sk.toUpperCase());
+    if (lower.includes(sk.toLowerCase())) detectedSkills.push(sk);
   });
+  if (!detectedSkills.length) detectedSkills.push("Problem Solving", "System Architecture", "Clean Code");
 
-  if (lower.includes("data analyst") || lower.includes("analytics") || lower.includes("tableau") || lower.includes("power bi") || lower.includes("bi ")) {
-    detectedRoles.push("Data Analyst");
+  return {
+    ok: true,
+    name,
+    target_role: roles[0],
+    experience_level: level,
+    skills: detectedSkills,
+    summary: `${name} — ${level.toUpperCase()} ${roles[0]}. Skills: ${detectedSkills.slice(0, 5).join(", ")}.`,
+    recommended_companies: [
+      { name: "Google", reason: "Direct hiring for " + roles[0], accent: "#4285F4" },
+      { name: "Amazon", reason: "Leadership Principles and Architecture", accent: "#FF9900" },
+      { name: "Microsoft", reason: "Enterprise Engineering alignment", accent: "#00A4EF" }
+    ]
+  };
+}
+
+async function parseLinkedInProfile(text, autoNavigate = false) {
+  const trimmed = (text || "").trim();
+  if (!trimmed || trimmed.length < 3) {
+    toast("Please paste your LinkedIn headline, bio, public URL, or skills summary.");
+    return;
   }
-  if (lower.includes("data scientist") || lower.includes("machine learning") || lower.includes("deep learning") || lower.includes("ai ") || lower.includes("llm")) {
-    detectedRoles.push("Data Scientist");
+
+  const spinner = $("#parseBtnSpinner");
+  const btnText = $("#parseBtnText");
+  const parseBtn = $("#parseLinkedInBtn");
+
+  if (spinner) spinner.style.display = "inline";
+  if (btnText) btnText.style.display = "none";
+  if (parseBtn) parseBtn.disabled = true;
+
+  try {
+    let data = null;
+    try {
+      const res = await fetch(`${API}/api/parse-bio`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: trimmed })
+      });
+      if (res.ok) {
+        data = await res.json();
+      }
+    } catch (netErr) {
+      console.warn("Server bio parsing offline, using client fallback:", netErr);
+    }
+
+    if (!data || !data.ok) {
+      data = parseBioClientFallback(trimmed);
+    }
+
+    populateProfilePreview(data, "Profile Text", autoNavigate);
+    if (btnText) btnText.textContent = "🔄 Re-analyze Profile Text";
+  } catch (err) {
+    console.error("Error parsing profile:", err);
+    toast("Error analyzing profile. Please check the text.");
+  } finally {
+    if (spinner) spinner.style.display = "none";
+    if (btnText) btnText.style.display = "inline";
+    if (parseBtn) parseBtn.disabled = false;
   }
-  if (lower.includes("devops") || lower.includes("sre") || lower.includes("infrastructure") || lower.includes("cloud")) {
-    detectedRoles.push("DevOps Engineer");
-  }
-  if (lower.includes("product manager") || lower.includes("product lead") || lower.includes("roadmap") || lower.includes("pm")) {
-    detectedRoles.push("Product Manager");
-  }
-  if (lower.includes("qa") || lower.includes("test") || lower.includes("automation") || lower.includes("sdet")) {
-    detectedRoles.push("QA Engineer");
-  }
-  if (lower.includes("frontend") || lower.includes("react") || lower.includes("ui") || lower.includes("web developer")) {
-    detectedRoles.push("Frontend Engineer");
-  }
-  if (lower.includes("backend") || lower.includes("java") || lower.includes("node") || lower.includes("microservices")) {
-    detectedRoles.push("Backend Engineer");
-  }
-  if (!detectedRoles.length || lower.includes("software") || lower.includes("developer") || lower.includes("engineer")) {
-    detectedRoles.unshift("Software Engineer");
-  }
+}
+
+let currentSelectedResumeFile = null;
+
+function populateProfilePreview(data, sourceLabel = "Profile", autoNavigate = false) {
+  if (!data) return;
+  currentParsedProfile = data;
 
   const preview = $("#linkedinPreview");
-  const chips = $("#detectedChips");
-  if (preview && chips) {
-    preview.style.display = "block";
-    chips.innerHTML = [
-      ...detectedRoles.map(r => `<span class="detected-chip selectable-role" data-role="${r}" style="border-color:var(--spotlight); color:var(--spotlight); cursor:pointer;">💼 ${r}</span>`),
-      ...detectedSkills.slice(0, 10).map(s => `<span class="detected-chip">⚡ ${s}</span>`)
-    ].join("");
+  if (preview) preview.style.display = "block";
 
-    $$(".selectable-role").forEach(chip => {
-      chip.onclick = () => {
-        state.selectedRole = chip.dataset.role;
-        $$(".selectable-role").forEach(c => c.style.background = "");
-        chip.style.background = "rgba(255,176,32,0.25)";
-        toast(`Selected target role: ${state.selectedRole}`);
-      };
-    });
+  const nameInput = $("#previewCandidateName");
+  if (nameInput) nameInput.value = data.name || "Candidate";
+
+  const avatar = $("#previewAvatar");
+  if (avatar) {
+    const initials = (data.name || "Candidate").split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase();
+    avatar.textContent = initials || "SO";
   }
 
-  state.selectedRole = detectedRoles[0];
+  const detectedLvl = (data.experience_level || "mid").toLowerCase();
+  $$("#previewLevelGroup .chip-mini").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.lvl === detectedLvl);
+  });
+
+  const roleSelect = $("#previewRoleSelect");
+  if (roleSelect) {
+    const existingOptions = Array.from(roleSelect.options).map(o => o.value);
+    if (data.target_role && !existingOptions.includes(data.target_role)) {
+      const newOpt = document.createElement("option");
+      newOpt.value = data.target_role;
+      newOpt.textContent = `🎯 ${data.target_role}`;
+      roleSelect.insertBefore(newOpt, roleSelect.firstChild);
+    }
+    roleSelect.value = data.target_role || "Software Engineer";
+  }
+
+  renderDetectedSkillsChips(data.skills || []);
+  renderMatchedCompaniesChips(data.recommended_companies || []);
+
+  toast(`✨ Analyzed ${sourceLabel}: ${data.name || 'Candidate'} (${data.target_role || 'Software Engineer'})`);
 
   if (autoNavigate) {
-    toast(`✨ Profile analyzed! Target role: ${detectedRoles[0]}`);
     setTimeout(() => {
-      closeAllModals();
-      goToScreen(1);
-    }, 900);
+      applyImportedProfile();
+    }, 1000);
   }
+}
+
+function handleResumeFileSelection(file) {
+  if (!file) return;
+
+  const fileName = file.name || "resume";
+  const ext = fileName.split(".").pop().toLowerCase();
+  const isPdf = file.type === "application/pdf" || ext === "pdf";
+  const isPng = file.type === "image/png" || ext === "png";
+  const isImage = isPng || file.type.startsWith("image/") || ["jpg", "jpeg", "webp"].includes(ext);
+  const isText = file.type.startsWith("text/") || ["txt", "md", "json"].includes(ext);
+
+  if (!isPdf && !isPng && !isImage && !isText) {
+    toast("⚠️ Please upload your resume in PDF (.pdf) or PNG (.png) format.");
+    return;
+  }
+
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    currentSelectedResumeFile = {
+      file,
+      name: fileName,
+      size: file.size,
+      type: file.type || (isPdf ? "application/pdf" : isPng ? "image/png" : "application/octet-stream"),
+      dataUrl: e.target.result,
+      isPdf,
+      isPng
+    };
+
+    const card = $("#selectedFileCard");
+    const nameEl = $("#selectedFileName");
+    const sizeEl = $("#selectedFileSize");
+    const iconEl = $("#selectedFileIcon");
+    const badgeEl = $("#selectedFileBadge");
+
+    if (nameEl) nameEl.textContent = fileName;
+    if (sizeEl) sizeEl.textContent = (file.size / 1024).toFixed(1) + " KB";
+    if (iconEl) iconEl.textContent = isPdf ? "📄" : isPng ? "🖼️" : "📁";
+    if (badgeEl) {
+      badgeEl.textContent = isPdf ? "PDF" : isPng ? "PNG" : ext.toUpperCase();
+      badgeEl.className = "format-badge " + (isPdf ? "format-badge-pdf" : isPng ? "format-badge-png" : "format-badge-secondary");
+    }
+    if (card) card.style.display = "flex";
+
+    toast(`Selected: ${fileName} (${isPdf ? 'PDF' : isPng ? 'PNG' : ext.toUpperCase()})`);
+  };
+
+  reader.onerror = () => {
+    toast("Error reading file. Please try again.");
+  };
+
+  reader.readAsDataURL(file);
+}
+
+async function submitResumeUpload() {
+  if (!currentSelectedResumeFile) {
+    const input = $("#resumeFileInput");
+    if (input && input.files && input.files[0]) {
+      handleResumeFileSelection(input.files[0]);
+    } else {
+      toast("Please select or drop a PDF or PNG resume file first.");
+      $("#resumeFileInput")?.click();
+      return;
+    }
+  }
+
+  const spinner = $("#uploadResumeBtnSpinner");
+  const textEl = $("#uploadResumeBtnText");
+  const submitBtn = $("#uploadResumeSubmitBtn");
+
+  if (spinner) spinner.style.display = "inline";
+  if (textEl) textEl.style.display = "none";
+  if (submitBtn) submitBtn.disabled = true;
+
+  try {
+    const formatName = currentSelectedResumeFile.isPdf ? "PDF" : (currentSelectedResumeFile.isPng ? "PNG" : "Resume");
+    toast(`⏳ Extracting skills & experience from ${formatName}...`);
+
+    const res = await fetch(`${API}/api/upload-resume`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        file_name: currentSelectedResumeFile.name,
+        mime_type: currentSelectedResumeFile.type,
+        file_data: currentSelectedResumeFile.dataUrl
+      })
+    });
+
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      throw new Error(data.message || data.error || "Failed to analyze resume file");
+    }
+
+    populateProfilePreview(data, (data.format || formatName).toUpperCase());
+    if (textEl) textEl.textContent = "🔄 Re-analyze Resume File";
+  } catch (err) {
+    console.error("Resume upload extraction error:", err);
+    toast(`⚠️ ${err.message || 'Error parsing resume file'}`);
+  } finally {
+    if (spinner) spinner.style.display = "none";
+    if (textEl) textEl.style.display = "inline";
+    if (submitBtn) submitBtn.disabled = false;
+  }
+}
+
+function switchResumeModalMode(mode = "upload") {
+  const tabUpload = $("#tabResumeUpload");
+  const tabPaste = $("#tabBioPaste");
+  const panelUpload = $("#resumeUploadPanel");
+  const panelPaste = $("#bioPastePanel");
+
+  if (mode === "upload") {
+    tabUpload?.classList.add("active");
+    tabPaste?.classList.remove("active");
+    if (panelUpload) panelUpload.style.display = "block";
+    if (panelPaste) panelPaste.style.display = "none";
+  } else {
+    tabPaste?.classList.add("active");
+    tabUpload?.classList.remove("active");
+    if (panelPaste) panelPaste.style.display = "block";
+    if (panelUpload) panelUpload.style.display = "none";
+  }
+}
+
+function applyImportedProfile() {
+  if (!currentParsedProfile) {
+    const rawVal = $("#linkedinInput")?.value;
+    if (rawVal && rawVal.trim().length >= 3) {
+      currentParsedProfile = parseBioClientFallback(rawVal);
+    } else {
+      toast("Please extract your LinkedIn profile or bio text first.");
+      return;
+    }
+  }
+
+  const name = $("#previewCandidateName")?.value?.trim() || currentParsedProfile.name || "Candidate";
+  const role = $("#previewRoleSelect")?.value || currentParsedProfile.target_role || "Software Engineer";
+  const activeLvlBtn = $("#previewLevelGroup .chip-mini.active");
+  const level = activeLvlBtn?.dataset.lvl || currentParsedProfile.experience_level || "mid";
+  const skills = currentParsedProfile.skills || [];
+  const summary = currentParsedProfile.summary || `${name} (${role} • ${level})`;
+  const recs = currentParsedProfile.recommended_companies || [];
+
+  state.candidateName = name;
+  state.candidateRole = role;
+  state.selectedRole = role;
+  state.selectedLevel = level;
+  state.importedSkills = skills;
+  state.userBio = summary;
+  state.recommendedCompanies = recs;
+  state.profileImported = true;
+
+  localStorage.setItem("gr_user_name", name);
+  localStorage.setItem("gr_user_role", role);
+  localStorage.setItem("gr_selected_level", level);
+  localStorage.setItem("gr_imported_skills", JSON.stringify(skills));
+  localStorage.setItem("gr_user_bio", summary);
+  localStorage.setItem("gr_recommended_companies", JSON.stringify(recs));
+
+  const userId = state.userId || localStorage.getItem("gr_user_id") || "default_user";
+  fetch(`${API}/api/db/user`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      id: userId,
+      display_name: name,
+      target_role: role,
+      target_level: level,
+      skills: skills,
+      recommended_companies: recs,
+      bio: summary
+    })
+  }).catch(err => console.warn("Firestore sync error:", err));
+
+  closeAllModals();
+  goToScreen(1);
+  renderImportedProfileBanner();
+  renderCompanyGrid();
+  toast(`🎯 Profile Active: ${name} (${role} • ${level.toUpperCase()})`);
+}
+
+function renderImportedProfileBanner() {
+  const banner = $("#importedProfileBanner");
+  if (!banner) return;
+
+  const savedSkills = JSON.parse(localStorage.getItem("gr_imported_skills") || "[]");
+  const savedRecs = JSON.parse(localStorage.getItem("gr_recommended_companies") || "[]");
+  if (savedRecs.length && (!state.recommendedCompanies || !state.recommendedCompanies.length)) {
+    state.recommendedCompanies = savedRecs;
+  }
+
+  const hasProfile = state.profileImported || (state.importedSkills && state.importedSkills.length > 0) || savedSkills.length > 0;
+  if (!hasProfile) {
+    banner.style.display = "none";
+    return;
+  }
+
+  const name = state.candidateName || localStorage.getItem("gr_user_name") || "Candidate";
+  const role = state.selectedRole || localStorage.getItem("gr_user_role") || "Software Engineer";
+  const level = (state.selectedLevel || localStorage.getItem("gr_selected_level") || "mid").toUpperCase();
+  const skillsCount = (state.importedSkills && state.importedSkills.length) || savedSkills.length || 0;
+
+  const infoText = $("#pabInfoText");
+  const skillsBadge = $("#pabSkillsCount");
+  const recChip = $("#pabTopRecChip");
+
+  if (infoText) infoText.textContent = `${name} (${role} • ${level})`;
+  if (skillsBadge) skillsBadge.textContent = `${skillsCount} skills loaded`;
+
+  if (recChip) {
+    if (state.recommendedCompanies && state.recommendedCompanies.length > 0) {
+      const top = state.recommendedCompanies[0];
+      recChip.textContent = `🎯 Top Match: ${top.name} (${top.match_percent || 90}%) • ${state.recommendedCompanies.length} AI Recommended`;
+      recChip.style.display = "inline-block";
+      recChip.onclick = () => {
+        state.companyFilter = "recommended";
+        $("#tabRecommendedCompanies")?.classList.add("active");
+        $("#tabAllCompanies")?.classList.remove("active");
+        renderCompanyGrid();
+        document.getElementById("companyFilterTabs")?.scrollIntoView({ behavior: "smooth" });
+      };
+    } else {
+      recChip.style.display = "none";
+    }
+  }
+
+  banner.style.display = "flex";
+}
+
+function clearImportedProfile() {
+  state.profileImported = false;
+  state.importedSkills = [];
+  state.userBio = "";
+  state.recommendedCompanies = [];
+  state.companyFilter = "all";
+  localStorage.removeItem("gr_imported_skills");
+  localStorage.removeItem("gr_user_bio");
+  localStorage.removeItem("gr_recommended_companies");
+  const banner = $("#importedProfileBanner");
+  if (banner) banner.style.display = "none";
+  const recTab = $("#tabRecommendedCompanies");
+  if (recTab) recTab.style.display = "none";
+  $("#tabAllCompanies")?.classList.add("active");
+  $("#tabRecommendedCompanies")?.classList.remove("active");
+  renderCompanyGrid();
+  toast("Imported profile cleared.");
 }
 
 /* -------------------------------------------------------------------------
@@ -905,8 +1364,32 @@ function renderCompanyGrid(){
   if (!grid) return;
   grid.innerHTML = "";
 
+  const totalCompaniesCount = (state.companies.length || 0) + (state.customBanks.length || 0);
+  const allCountEl = $("#allCompaniesCount");
+  if (allCountEl) allCountEl.textContent = totalCompaniesCount;
+
+  const recCompanies = Array.isArray(state.recommendedCompanies) ? state.recommendedCompanies : [];
+  const recTab = $("#tabRecommendedCompanies");
+  const recCountEl = $("#recCompaniesCount");
+
+  if (recTab) {
+    if (recCompanies.length > 0) {
+      recTab.style.display = "inline-flex";
+      if (recCountEl) recCountEl.textContent = recCompanies.length;
+    } else {
+      recTab.style.display = "none";
+      if (state.companyFilter === "recommended") state.companyFilter = "all";
+    }
+  }
+
+  const allTab = $("#tabAllCompanies");
+  if (allTab && recTab) {
+    allTab.classList.toggle("active", state.companyFilter === "all");
+    recTab.classList.toggle("active", state.companyFilter === "recommended");
+  }
+
   const q = state.searchQuery.toLowerCase().trim();
-  const allCards = [...state.customBanks, ...state.companies].filter(c => {
+  let cards = [...state.customBanks, ...state.companies].filter(c => {
     if (!q) return true;
     const nameMatch = (c.name || "").toLowerCase().includes(q);
     const focusMatch = (c.focus || "").toLowerCase().includes(q);
@@ -914,28 +1397,73 @@ function renderCompanyGrid(){
     return nameMatch || focusMatch || roleMatch;
   });
 
-  if (allCards.length === 0) {
-    grid.innerHTML = `<div style="grid-column:1/-1; padding:40px; text-align:center; color:var(--muted);">No companies found matching "${state.searchQuery}". Try searching "Google", "Amazon", "Frontend", or "Python".</div>`;
+  // If user selected "AI Recommended" filter tab
+  if (state.companyFilter === "recommended" && recCompanies.length > 0) {
+    const recIdSet = new Set(recCompanies.map(r => r.id));
+    cards = cards.filter(c => recIdSet.has(c.id));
+    // Sort by recommendation match_percent descending
+    cards.sort((a, b) => {
+      const matchA = recCompanies.find(r => r.id === a.id)?.match_percent || 0;
+      const matchB = recCompanies.find(r => r.id === b.id)?.match_percent || 0;
+      return matchB - matchA;
+    });
+  } else if (recCompanies.length > 0) {
+    // When in "all" mode, prioritize recommended companies to top
+    const recIdSet = new Set(recCompanies.map(r => r.id));
+    cards.sort((a, b) => {
+      const isRecA = recIdSet.has(a.id) ? 1 : 0;
+      const isRecB = recIdSet.has(b.id) ? 1 : 0;
+      return isRecB - isRecA;
+    });
+  }
+
+  if (cards.length === 0) {
+    if (state.companyFilter === "recommended") {
+      grid.innerHTML = `<div style="grid-column:1/-1; padding:40px; text-align:center; color:var(--muted);">No recommended companies matched your current search. <button class="btn btn-ghost btn-xs" id="gridClearFilterBtn">View All Companies</button></div>`;
+      $("#gridClearFilterBtn")?.addEventListener("click", () => {
+        state.companyFilter = "all";
+        renderCompanyGrid();
+      });
+    } else {
+      grid.innerHTML = `<div style="grid-column:1/-1; padding:40px; text-align:center; color:var(--muted);">No companies found matching "${escapeHtml(state.searchQuery)}". Try searching "Google", "Amazon", "Frontend", or "Python".</div>`;
+    }
     return;
   }
 
-  allCards.forEach((c) => {
+  cards.forEach((c) => {
     const card = document.createElement("div");
     card.className = "company-card";
     card.style.setProperty("--card-accent", c.accent || "#FFB020");
     const avgText = c.benchmark_avg ? `Avg Score: ${c.benchmark_avg}` : (c.isCustom ? "Custom Bank" : "");
+    const recMatch = recCompanies.find(r => r.id === c.id);
+
+    if (recMatch) {
+      card.classList.add("is-ai-recommended");
+    }
 
     card.innerHTML = `
+      ${recMatch ? `<div class="rec-ribbon">✨ AI Recommended • ${recMatch.match_percent || 90}% Fit</div>` : ''}
       <div class="card-top">
-        <div class="card-logo">${c.name[0]}</div>
+        <div class="card-logo">${escapeHtml(c.name[0])}</div>
         <div>
-          <div class="card-name">${c.name} ${c.isCustom ? '<span style="font-size:.65rem; color:var(--signal);">[CUSTOM]</span>' : ''}</div>
-          <div class="card-diff">${c.difficulty} • ${avgText}</div>
+          <div class="card-name">${escapeHtml(c.name)} ${c.isCustom ? '<span style="font-size:.65rem; color:var(--signal);">[CUSTOM]</span>' : ''}</div>
+          <div class="card-diff">${escapeHtml(c.difficulty)} • ${avgText}</div>
         </div>
       </div>
-      <p class="card-focus">${c.focus}</p>
+      <p class="card-focus">${escapeHtml(c.focus)}</p>
+      ${recMatch ? `
+        <div class="rec-card-matching-skills">
+          <span class="rec-cms-title">🎯 FIT REASON (${escapeHtml(recMatch.experience_fit || 'Track Fit')}):</span>
+          <span style="font-size:.72rem; color:var(--text); line-height:1.35;">${escapeHtml(recMatch.reason || 'Strong technical skills and seniority calibration match.')}</span>
+          ${recMatch.matching_skills && recMatch.matching_skills.length ? `
+            <div class="rec-cms-tags">
+              ${recMatch.matching_skills.slice(0, 4).map(s => `<span class="rec-cms-tag">✓ ${escapeHtml(s)}</span>`).join("")}
+            </div>
+          ` : ''}
+        </div>
+      ` : ''}
       <div class="card-rounds">
-        ${(c.rounds || ["Interview"]).map(r => `<span class="round-pill">${r}</span>`).join("")}
+        ${(c.rounds || ["Interview"]).map(r => `<span class="round-pill">${escapeHtml(r)}</span>`).join("")}
       </div>
     `;
     card.addEventListener("click", () => openSetupModal(c));
@@ -1070,14 +1598,16 @@ async function ensureCameraReady(){
 function openSetupModal(company){
   state.activeCompany = company;
   state.isSpacedRepMode = false;
-  const roleKeys = company.roles ? (Array.isArray(company.roles) ? company.roles : Object.keys(company.roles)) : ["Software Engineer"];
-  if (!state.selectedRole || !roleKeys.includes(state.selectedRole)) {
+  const roleKeys = company.roles ? (Array.isArray(company.roles) ? [...company.roles] : Object.keys(company.roles)) : ["Software Engineer"];
+  if (state.selectedRole && !roleKeys.includes(state.selectedRole)) {
+    roleKeys.unshift(state.selectedRole);
+  } else if (!state.selectedRole) {
     state.selectedRole = roleKeys[0];
   }
   state.selectedPersona = "friendly";
   state.selectedFormat = "onsite";
   state.selectedLang = "english";
-  if (!state.selectedLevel) state.selectedLevel = "mid";
+  if (!state.selectedLevel) state.selectedLevel = localStorage.getItem("gr_selected_level") || "mid";
 
   $("#modalLogo").style.background = company.accent || "var(--spotlight)";
   $("#modalLogo").textContent = company.name[0];
@@ -1086,7 +1616,7 @@ function openSetupModal(company){
 
   $("#roundChips").innerHTML = (company.rounds || ["General Round"]).map(r => `<span class="chip">${r}</span>`).join("");
   $("#roleChips").innerHTML = roleKeys.map(r =>
-    `<span class="chip selectable ${r === state.selectedRole ? "selected":""}" data-role="${r}">${r}</span>`
+    `<span class="chip selectable ${r === state.selectedRole ? "selected":""}" data-role="${r}">${r === state.selectedRole && state.profileImported ? `🎯 ${r}` : r}</span>`
   ).join("");
 
   $$(".role-chips .chip").forEach(chip => {
@@ -2284,7 +2814,10 @@ function initEventListeners(){
 
   // Hero Actions
   $("#startBtn")?.addEventListener("click", () => goToScreen(1));
-  $("#openLinkedInBtn")?.addEventListener("click", () => $("#linkedinModal")?.classList.add("open"));
+  $("#openLinkedInBtn")?.addEventListener("click", () => {
+    switchResumeModalMode("upload");
+    $("#linkedinModal")?.classList.add("open");
+  });
   $("#howItWorksBtn")?.addEventListener("click", () => {
     goToScreen(1);
     toast("Pick a company panel to customize rounds, personas, and start rehearsal.");
@@ -2307,6 +2840,10 @@ function initEventListeners(){
   });
   $("#spacedRepBtn")?.addEventListener("click", () => startSpacedRepRehearsal());
   $("#customBankBtn")?.addEventListener("click", () => $("#customBankModal")?.classList.add("open"));
+  $("#castingUploadResumeBtn")?.addEventListener("click", () => {
+    switchResumeModalMode("upload");
+    $("#linkedinModal")?.classList.add("open");
+  });
 
   // Setup Modal Controls
   $$(".modal-tabs .tab-btn").forEach(btn => {
@@ -2456,10 +2993,170 @@ function initEventListeners(){
     $("#candidateWebcam")?.classList.toggle("flipped", state.cameraFlipped);
   });
 
-  // LinkedIn Modal
+  // Resume & Profile Modal Mode Switchers
+  $("#tabResumeUpload")?.addEventListener("click", () => switchResumeModalMode("upload"));
+  $("#tabBioPaste")?.addEventListener("click", () => switchResumeModalMode("paste"));
+
+  // Resume File Upload Dropzone & File Input Handlers
+  const resumeDropzone = $("#resumeDropzone");
+  const resumeFileInput = $("#resumeFileInput");
+
+  if (resumeDropzone && resumeFileInput) {
+    resumeDropzone.addEventListener("click", (e) => {
+      // Don't trigger if clicking child input directly
+      if (e.target !== resumeFileInput) {
+        resumeFileInput.click();
+      }
+    });
+
+    ["dragenter", "dragover"].forEach(evt => {
+      resumeDropzone.addEventListener(evt, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        resumeDropzone.classList.add("dragover");
+      });
+    });
+
+    ["dragleave", "dragend"].forEach(evt => {
+      resumeDropzone.addEventListener(evt, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        resumeDropzone.classList.remove("dragover");
+      });
+    });
+
+    resumeDropzone.addEventListener("drop", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      resumeDropzone.classList.remove("dragover");
+      const files = e.dataTransfer?.files;
+      if (files && files.length > 0) {
+        handleResumeFileSelection(files[0]);
+      }
+    });
+
+    resumeFileInput.addEventListener("change", (e) => {
+      const file = e.target.files?.[0];
+      if (file) handleResumeFileSelection(file);
+    });
+  }
+
+  $("#removeFileBtn")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    currentSelectedResumeFile = null;
+    const card = $("#selectedFileCard");
+    if (card) card.style.display = "none";
+    if (resumeFileInput) resumeFileInput.value = "";
+    toast("Selected resume file removed.");
+  });
+
+  $("#uploadResumeSubmitBtn")?.addEventListener("click", () => {
+    submitResumeUpload();
+  });
+
+  // Bio & LinkedIn Modal Actions
   $("#parseLinkedInBtn")?.addEventListener("click", () => {
     const val = $("#linkedinInput")?.value;
-    parseLinkedInProfile(val, true);
+    parseLinkedInProfile(val, false);
+  });
+
+  $("#applyLinkedInBtn")?.addEventListener("click", () => {
+    applyImportedProfile();
+  });
+
+  $("#clearLinkedInBtn")?.addEventListener("click", () => {
+    const input = $("#linkedinInput");
+    if (input) input.value = "";
+    currentSelectedResumeFile = null;
+    const card = $("#selectedFileCard");
+    if (card) card.style.display = "none";
+    if (resumeFileInput) resumeFileInput.value = "";
+    const preview = $("#linkedinPreview");
+    if (preview) preview.style.display = "none";
+    currentParsedProfile = null;
+    toast("Input cleared.");
+  });
+
+  $("#loadSampleBioBtn")?.addEventListener("click", () => {
+    const sample = `Sangeeta Ojha\nSenior Software Engineer with 5+ years of experience in React, Node.js, Python, AWS, Docker, and PostgreSQL. Passionate about system design and high-throughput microservices.`;
+    const input = $("#linkedinInput");
+    if (input) input.value = sample;
+    parseLinkedInProfile(sample, false);
+  });
+
+  $("#bioFileInput")?.addEventListener("change", (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const content = event.target?.result;
+      if (typeof content === "string" && content.trim()) {
+        const input = $("#linkedinInput");
+        if (input) input.value = content;
+        parseLinkedInProfile(content, false);
+        toast(`📁 Loaded ${file.name}`);
+      }
+    };
+    reader.readAsText(file);
+  });
+
+  // Level selector in preview modal
+  $$("#previewLevelGroup .chip-mini").forEach(btn => {
+    btn.addEventListener("click", () => {
+      $$("#previewLevelGroup .chip-mini").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      refreshProfileRecommendations();
+    });
+  });
+
+  $("#previewRoleSelect")?.addEventListener("change", () => {
+    refreshProfileRecommendations();
+  });
+
+  // Add custom skill in preview modal
+  const handleAddSkill = () => {
+    const input = $("#addSkillInput");
+    const val = input?.value?.trim();
+    if (!val) return;
+    if (!currentParsedProfile) currentParsedProfile = { skills: [] };
+    if (!currentParsedProfile.skills) currentParsedProfile.skills = [];
+    if (!currentParsedProfile.skills.includes(val)) {
+      currentParsedProfile.skills.push(val);
+      renderDetectedSkillsChips(currentParsedProfile.skills);
+      refreshProfileRecommendations();
+    }
+    input.value = "";
+  };
+
+  $("#addSkillBtn")?.addEventListener("click", handleAddSkill);
+  $("#addSkillInput")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      handleAddSkill();
+    }
+  });
+
+  // Company Grid Filtering Tabs
+  $("#tabAllCompanies")?.addEventListener("click", () => {
+    state.companyFilter = "all";
+    $("#tabAllCompanies")?.classList.add("active");
+    $("#tabRecommendedCompanies")?.classList.remove("active");
+    renderCompanyGrid();
+  });
+
+  $("#tabRecommendedCompanies")?.addEventListener("click", () => {
+    state.companyFilter = "recommended";
+    $("#tabRecommendedCompanies")?.classList.add("active");
+    $("#tabAllCompanies")?.classList.remove("active");
+    renderCompanyGrid();
+  });
+
+  // Profile Banner Actions on Screen 1
+  $("#pabEditBtn")?.addEventListener("click", () => {
+    $("#linkedinModal")?.classList.add("open");
+  });
+  $("#pabClearBtn")?.addEventListener("click", () => {
+    clearImportedProfile();
   });
 
   // Custom Question Bank Modal
@@ -3101,6 +3798,7 @@ window.addEventListener("DOMContentLoaded", () => {
   loadAchievements();
   loadWeakSpots();
   loadCountdown();
+  renderImportedProfileBanner();
   checkHashForSharedReport();
   updateAuthNavUI();
   initEventListeners();

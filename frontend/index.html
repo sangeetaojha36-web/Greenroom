@@ -119,7 +119,7 @@
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 8H14M14 8L9 3M14 8L9 13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </button>
           <button class="btn btn-secondary" id="openLinkedInBtn">
-            <span>📋 Import LinkedIn / Bio</span>
+            <span>📄 Upload Resume (PDF / PNG)</span>
           </button>
           <button class="btn btn-ghost" id="howItWorksBtn">How it scores you</button>
         </div>
@@ -182,6 +182,35 @@
         </button>
         <button class="btn btn-ghost btn-sm" id="customBankBtn">
           <span>➕ Paste Custom Bank</span>
+        </button>
+        <button class="btn btn-secondary btn-sm" id="castingUploadResumeBtn">
+          <span>📄 Upload Resume (PDF / PNG)</span>
+        </button>
+      </div>
+
+      <!-- Active Profile Banner (Shown when LinkedIn / Bio is imported) -->
+      <div class="profile-active-banner" id="importedProfileBanner" style="display:none;">
+        <div class="pab-left" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <span class="pab-badge">🎯 PROFILE ACTIVE</span>
+          <span class="pab-info" id="pabInfoText">Candidate (Software Engineer)</span>
+          <span class="pab-skills" id="pabSkillsCount">0 skills</span>
+          <span id="pabTopRecChip" style="display:none; font-size:.72rem; color:var(--spotlight); font-family:var(--font-mono); background:rgba(255,176,32,0.1); padding:2px 8px; border-radius:999px; border:1px solid rgba(255,176,32,0.25); cursor:pointer;" title="Click to view AI recommendations">🎯 Top Match: Google (96%)</span>
+        </div>
+        <div class="pab-right">
+          <button class="btn btn-ghost btn-xs" id="pabEditBtn">✏️ Edit / Re-import</button>
+          <button class="btn btn-ghost btn-xs" id="pabClearBtn" title="Clear profile">✕</button>
+        </div>
+      </div>
+
+      <!-- Company View Filters -->
+      <div class="company-filter-tabs" id="companyFilterTabs">
+        <button type="button" class="company-filter-tab active" id="tabAllCompanies" data-filter="all">
+          <span>🏢 All Companies</span>
+          <span class="company-filter-count" id="allCompaniesCount">20</span>
+        </button>
+        <button type="button" class="company-filter-tab" id="tabRecommendedCompanies" data-filter="recommended" style="display:none;">
+          <span>✨ AI Recommended For You</span>
+          <span class="company-filter-count" id="recCompaniesCount">0</span>
         </button>
       </div>
     </div>
@@ -680,26 +709,153 @@
 
 <!-- ============ MODALS ============ -->
 
-<!-- 1. LINKEDIN IMPORT MODAL -->
+<!-- 1. RESUME & PROFILE IMPORT MODAL -->
 <div class="modal-overlay" id="linkedinModal">
-  <div class="modal-card">
+  <div class="modal-card" style="max-width: 600px;">
     <button class="modal-close" id="closeLinkedInModal">✕</button>
     <div class="modal-header">
-      <div class="modal-logo" style="background:#0A66C2; color:#fff;">in</div>
+      <div class="modal-logo" style="background:#0A66C2; color:#fff; font-weight:700; font-size:1.1rem;">📄</div>
       <div>
-        <h3>Import LinkedIn Profile / Bio</h3>
-        <p class="modal-focus">Paste your profile headline, about section, or skills list to customize question matching.</p>
+        <h3>Import Resume & Candidate Profile</h3>
+        <p class="modal-focus">Upload your resume in <strong>PDF format (.pdf)</strong> or <strong>PNG format (.png)</strong> to automatically extract your skills, target role, and match company panels.</p>
       </div>
     </div>
-    <div class="field-row">
-      <label>Paste your LinkedIn profile text or bio summary:</label>
-      <textarea id="linkedinInput" class="custom-textarea" rows="6" placeholder="e.g. Senior Software Engineer with 4 years experience in Python, Distributed Systems, AWS, and React. Passionate about system design and high-throughput microservices..."></textarea>
+
+    <!-- Modal Mode Tabs: Resume Upload vs Paste Bio -->
+    <div class="resume-modal-tabs">
+      <button type="button" class="resume-modal-tab active" id="tabResumeUpload" data-mode="upload">
+        <span>📄 Upload Resume (PDF / PNG)</span>
+      </button>
+      <button type="button" class="resume-modal-tab" id="tabBioPaste" data-mode="paste">
+        <span>🔗 Paste Bio / LinkedIn</span>
+      </button>
     </div>
+
+    <!-- Mode 1: PDF / PNG Resume Upload -->
+    <div id="resumeUploadPanel">
+      <div class="resume-upload-dropzone" id="resumeDropzone">
+        <input type="file" id="resumeFileInput" accept=".pdf,.png,application/pdf,image/png,image/jpeg,.jpg,.jpeg,.webp,.txt,.md" style="display:none;" />
+        <div class="dropzone-icons">
+          <div class="dropzone-icon-box pdf-box" title="PDF format supported">📄</div>
+          <div class="dropzone-icon-box png-box" title="PNG format supported">🖼️</div>
+        </div>
+        <p class="dropzone-title">Drag & drop your resume here, or <span style="color:var(--spotlight); text-decoration:underline;">click to browse</span></p>
+        <p class="dropzone-sub">Accepted formats for resume parsing:</p>
+        <div class="format-badges-row">
+          <span class="format-badge format-badge-pdf">📄 PDF (.pdf)</span>
+          <span class="format-badge format-badge-png">🖼️ PNG (.png)</span>
+          <span class="format-badge format-badge-secondary">Images / Docs</span>
+        </div>
+      </div>
+
+      <!-- Selected File Card -->
+      <div class="file-selected-card" id="selectedFileCard" style="display:none;">
+        <div class="fsc-left">
+          <span class="fsc-icon" id="selectedFileIcon">📄</span>
+          <div class="fsc-meta">
+            <span class="fsc-name" id="selectedFileName">my_resume.pdf</span>
+            <span class="fsc-size" id="selectedFileSize">0 KB</span>
+          </div>
+        </div>
+        <div class="fsc-right">
+          <span class="format-badge" id="selectedFileBadge">PDF</span>
+          <button type="button" class="btn btn-ghost btn-xs" id="removeFileBtn" title="Remove selected file">✕</button>
+        </div>
+      </div>
+
+      <button type="button" class="btn btn-primary btn-block" id="uploadResumeSubmitBtn" style="margin-top:12px;">
+        <span id="uploadResumeBtnText">✨ Extract & Analyze Resume</span>
+        <span id="uploadResumeBtnSpinner" style="display:none;">⏳ Analyzing Resume with AI...</span>
+      </button>
+    </div>
+
+    <!-- Mode 2: Paste LinkedIn / Bio Text -->
+    <div id="bioPastePanel" style="display:none;">
+      <div class="linkedin-quick-bar" style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 12px; gap:8px;">
+        <button type="button" class="btn btn-ghost btn-xs" id="loadSampleBioBtn" style="border: 1px dashed var(--spotlight); color: var(--spotlight);">
+          <span>💡 Load Sample Bio</span>
+        </button>
+        <label class="btn btn-ghost btn-xs" style="cursor:pointer; border: 1px dashed var(--border); color: var(--muted-2);">
+          <span>📁 Load Text (.txt, .md)</span>
+          <input type="file" id="bioFileInput" accept=".txt,.md,.json" style="display:none;" />
+        </label>
+      </div>
+
+      <div class="field-row">
+        <label for="linkedinInput">Paste LinkedIn URL, headline, or bio summary:</label>
+        <textarea id="linkedinInput" class="custom-textarea" rows="4" placeholder="e.g. https://www.linkedin.com/in/sangeeta-ojha&#10;or: Senior Software Engineer with 5+ years experience in React, Node.js, Python, AWS, Docker, and PostgreSQL."></textarea>
+      </div>
+
+      <button type="button" class="btn btn-primary btn-block" id="parseLinkedInBtn">
+        <span id="parseBtnText">✨ Extract & Match Profile</span>
+        <span id="parseBtnSpinner" style="display:none;">⏳ Analyzing Profile...</span>
+      </button>
+    </div>
+
+    <!-- Detected Profile Result Preview -->
     <div class="linkedin-preview" id="linkedinPreview" style="display:none;">
-      <p class="preview-label">Detected Target Roles & Focus Areas:</p>
-      <div class="detected-chips" id="detectedChips"></div>
+      <div class="preview-header-row" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid var(--border); padding-bottom:10px;">
+        <div style="display:flex; align-items:center; gap:10px;">
+          <div id="previewAvatar" style="width:34px; height:34px; border-radius:50%; background:var(--spotlight); color:#111; font-weight:700; display:flex; align-items:center; justify-content:center; font-size:.85rem;">SO</div>
+          <div>
+            <label style="font-size:.68rem; color:var(--muted); font-family:var(--font-mono); display:block;">CANDIDATE NAME</label>
+            <input type="text" id="previewCandidateName" class="custom-input" style="font-weight:700; font-size:.9rem; padding:2px 8px; width:190px; height:28px;" value="Candidate" />
+          </div>
+        </div>
+        <div>
+          <label style="font-size:.68rem; color:var(--muted); font-family:var(--font-mono); display:block; text-align:right;">LEVEL</label>
+          <div class="level-badges-mini" id="previewLevelGroup" style="display:flex; gap:4px;">
+            <button type="button" class="chip-mini" data-lvl="junior">Junior</button>
+            <button type="button" class="chip-mini active" data-lvl="mid">Mid</button>
+            <button type="button" class="chip-mini" data-lvl="senior">Senior</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="field-row" style="margin-bottom:12px;">
+        <label style="font-size:.72rem; color:var(--muted); font-family:var(--font-mono);">TARGET ROLE FOR REHEARSAL:</label>
+        <select id="previewRoleSelect" class="custom-select" style="font-size:.85rem; padding:6px 10px;">
+          <option value="Software Engineer">Software Engineer</option>
+          <option value="Frontend Engineer">Frontend Engineer</option>
+          <option value="Backend Engineer">Backend Engineer</option>
+          <option value="DevOps Engineer">DevOps Engineer</option>
+          <option value="Data Scientist">Data Scientist</option>
+          <option value="Data Analyst">Data Analyst</option>
+          <option value="Product Manager">Product Manager</option>
+          <option value="QA Engineer">QA Engineer</option>
+        </select>
+      </div>
+
+      <div style="margin-bottom:12px;">
+        <label style="font-size:.72rem; color:var(--muted); font-family:var(--font-mono); display:flex; justify-content:space-between;">
+          <span>EXTRACTED FOCUS SKILLS (Click ✕ to remove):</span>
+          <span id="skillCountBadge" style="color:var(--spotlight);">0 skills</span>
+        </label>
+        <div class="detected-chips" id="detectedChips" style="margin-top:6px; max-height:110px; overflow-y:auto; padding:4px 0;"></div>
+        <div style="display:flex; gap:6px; margin-top:8px;">
+          <input type="text" id="addSkillInput" class="custom-input" placeholder="+ Add skill (e.g. Redis, Kafka, System Design)" style="font-size:.75rem; height:28px; flex:1;" />
+          <button type="button" class="btn btn-secondary btn-xs" id="addSkillBtn">+ Add</button>
+        </div>
+      </div>
+
+      <div id="previewCompaniesSection" style="margin-bottom:14px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-sm); padding:12px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <div>
+            <p style="font-size:.76rem; font-family:var(--font-mono); font-weight:700; color:var(--text); margin:0;">🎯 RECOMMENDED COMPANIES ACCORDING TO SKILLS & EXPERIENCE</p>
+            <p style="font-size:.68rem; color:var(--muted); margin:2px 0 0 0;">Ranked by technical stack overlap, seniority bar alignment, and interview track fit.</p>
+          </div>
+          <span id="recCountBadge" style="font-size:.7rem; font-family:var(--font-mono); color:var(--spotlight); background:rgba(255,176,32,0.1); padding:2px 8px; border-radius:999px; border:1px solid rgba(255,176,32,0.25);">5 Matches</span>
+        </div>
+        <div id="previewMatchedCompanies" class="preview-matched-companies-grid"></div>
+      </div>
+
+      <div style="display:flex; gap:10px; margin-top:14px;">
+        <button class="btn btn-primary" id="applyLinkedInBtn" style="flex:1;">
+          <span>🎯 Save Profile & Launch Audition</span>
+        </button>
+        <button class="btn btn-ghost btn-sm" id="clearLinkedInBtn">Clear</button>
+      </div>
     </div>
-    <button class="btn btn-primary btn-block" id="parseLinkedInBtn">Extract & Personalize Rehearsal</button>
   </div>
 </div>
 

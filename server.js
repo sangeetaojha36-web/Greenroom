@@ -5,9 +5,26 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 import { execFile } from "child_process";
 import { promisify } from "util";
+import { createRequire } from "module";
+import { GoogleGenAI } from "@google/genai";
 import * as aiEngine from "./aiEngine.js";
 import * as dbService from "./dbService.js";
 import embeddedQuestionBank from "./data/question_bank_data.js";
+
+const require = createRequire(import.meta.url);
+const { PDFParse } = require("pdf-parse");
+
+let genAIClient = null;
+function getGenAI() {
+  if (!genAIClient && process.env.GEMINI_API_KEY) {
+    try {
+      genAIClient = new GoogleGenAI({});
+    } catch (e) {
+      console.warn("Failed to initialize GoogleGenAI:", e.message);
+    }
+  }
+  return genAIClient;
+}
 
 const execFileAsync = promisify(execFile);
 
@@ -56,7 +73,8 @@ const PORT = 3000;
 const FRONTEND_DIR = getFrontendDir();
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "25mb" }));
+app.use(express.urlencoded({ extended: true, limit: "25mb" }));
 
 // API route normalizer: handles serverless environments where /api prefix may be stripped or present
 app.use((req, res, next) => {
@@ -68,7 +86,10 @@ app.use((req, res, next) => {
     req.url.startsWith("/report") ||
     req.url.startsWith("/benchmark") ||
     req.url.startsWith("/db") ||
-    req.url.startsWith("/auth")
+    req.url.startsWith("/auth") ||
+    req.url.startsWith("/parse-bio") ||
+    req.url.startsWith("/upload-resume") ||
+    req.url.startsWith("/recommend-companies")
   )) {
     req.url = "/api" + req.url;
   }
@@ -384,7 +405,11 @@ app.get("/api/questions/:company_id", (req, res) => {
   if (rawLevel === "easy") rawLevel = "junior";
   const requestedLevel = rawLevel; // "junior", "mid", "senior", "all"
 
-  const allRoleQuestions = c.roles?.[role] || [];
+  let allRoleQuestions = c.roles?.[role] || [];
+  if (!allRoleQuestions.length) {
+    const matchedKey = roleKeys.find(k => k.toLowerCase().includes(role.toLowerCase()) || role.toLowerCase().includes(k.toLowerCase()));
+    allRoleQuestions = c.roles?.[matchedKey] || c.roles?.["Software Engineer"] || Object.values(c.roles || {})[0] || [];
+  }
   const allBehavioral = c.behavioral || [];
   const allHr = c.hr || [];
 
@@ -671,6 +696,685 @@ app.post("/api/db/user", async (req, res) => {
     res.json(updated);
   } catch (err) {
     res.status(500).json({ error: "Failed to update user profile", message: err.message });
+  }
+});
+
+/* ---------------------------------------------------------------------------
+   LinkedIn & Bio NLP Parsing Endpoint
+   --------------------------------------------------------------------------- */
+function parseCandidateBio(rawInput) {
+  const input = (rawInput || "").trim();
+  if (!input) {
+    throw new Error("No bio, LinkedIn text, or profile URL provided.");
+  }
+
+  let extractedUrl = "";
+  let handleName = "";
+  const urlMatch = input.match(/(?:https?:\/\/)?(?:www\.)?linkedin\.com\/in\/([a-zA-Z0-9_-]+)/i);
+  if (urlMatch) {
+    extractedUrl = urlMatch[0];
+    const slug = urlMatch[1].replace(/[-_]/g, " ").trim();
+    if (slug) {
+      handleName = slug.split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+    }
+  }
+
+  const lower = input.toLowerCase();
+
+  // Candidate Name extraction
+  let name = handleName;
+  const nameLineMatch = input.match(/(?:name|candidate|profile|full name)\s*[:\-]\s*([A-Za-z\s.'-]{2,40})/i);
+  if (nameLineMatch && nameLineMatch[1].trim()) {
+    name = nameLineMatch[1].trim();
+  } else if (!name) {
+    const lines = input.split("\n").map(l => l.trim()).filter(Boolean);
+    if (lines.length > 0) {
+      const first = lines[0];
+      if (/^[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){1,3}$/.test(first) && first.length < 35 && !/resume|cv|profile|linkedin|developer|engineer|summary/i.test(first)) {
+        name = first;
+      }
+    }
+  }
+  if (!name) name = "Candidate";
+
+  // Seniority / Experience Level
+  let level = "mid";
+  let years = null;
+  const yrMatch = lower.match(/(\d+)\+?\s*(?:years?|yrs?)(?:\s+of)?\s+experience/i) || lower.match(/experience\s*[:\-]?\s*(\d+)\+?\s*(?:years?|yrs?)/i);
+  if (yrMatch) {
+    years = parseInt(yrMatch[1], 10);
+  }
+
+  if (lower.includes("lead") || lower.includes("staff") || lower.includes("principal") || lower.includes("architect") || lower.includes("director") || (years && years >= 8)) {
+    level = "senior";
+  } else if (lower.includes("senior") || lower.includes("sr.") || lower.includes("sr ") || (years && years >= 4)) {
+    level = "senior";
+  } else if (lower.includes("junior") || lower.includes("entry") || lower.includes("intern") || lower.includes("fresh") || (years !== null && years <= 2)) {
+    level = "junior";
+  }
+
+  // Role detection
+  const detectedRoles = [];
+  if (lower.includes("frontend") || lower.includes("front-end") || lower.includes("react developer") || lower.includes("ui engineer")) {
+    detectedRoles.push("Frontend Engineer");
+  }
+  if (lower.includes("backend") || lower.includes("back-end") || lower.includes("node developer") || lower.includes("java developer") || lower.includes("microservices")) {
+    detectedRoles.push("Backend Engineer");
+  }
+  if (lower.includes("devops") || lower.includes("sre") || lower.includes("site reliability") || lower.includes("cloud engineer") || lower.includes("infrastructure")) {
+    detectedRoles.push("DevOps Engineer");
+  }
+  if (lower.includes("data scientist") || lower.includes("machine learning") || lower.includes("deep learning") || lower.includes("ai engineer") || lower.includes("nlp") || lower.includes("computer vision")) {
+    detectedRoles.push("Data Scientist");
+  }
+  if (lower.includes("data analyst") || lower.includes("business analyst") || lower.includes("analytics") || lower.includes("tableau") || lower.includes("power bi")) {
+    detectedRoles.push("Data Analyst");
+  }
+  if (lower.includes("product manager") || lower.includes("product lead") || lower.includes("technical product manager") || lower.includes("roadmap")) {
+    detectedRoles.push("Product Manager");
+  }
+  if (lower.includes("qa") || lower.includes("quality assurance") || lower.includes("sdet") || lower.includes("test automation")) {
+    detectedRoles.push("QA Engineer");
+  }
+  if (detectedRoles.length === 0) {
+    detectedRoles.push("Software Engineer");
+  } else if (!detectedRoles.includes("Software Engineer") && (lower.includes("software engineer") || lower.includes("full stack") || lower.includes("fullstack"))) {
+    detectedRoles.push("Software Engineer");
+  }
+
+  const primaryRole = detectedRoles[0] || "Software Engineer";
+
+  // Skills extraction
+  const skillVocabulary = [
+    { key: "python", label: "Python" },
+    { key: "javascript", label: "JavaScript" },
+    { key: "typescript", label: "TypeScript" },
+    { key: "react", label: "React" },
+    { key: "next.js", label: "Next.js" },
+    { key: "nextjs", label: "Next.js" },
+    { key: "node", label: "Node.js" },
+    { key: "nodejs", label: "Node.js" },
+    { key: "express", label: "Express" },
+    { key: "java", label: "Java" },
+    { key: "spring", label: "Spring Boot" },
+    { key: "c++", label: "C++" },
+    { key: "golang", label: "Go" },
+    { key: "rust", label: "Rust" },
+    { key: "sql", label: "SQL" },
+    { key: "postgres", label: "PostgreSQL" },
+    { key: "mongodb", label: "MongoDB" },
+    { key: "redis", label: "Redis" },
+    { key: "kafka", label: "Kafka" },
+    { key: "rabbitmq", label: "RabbitMQ" },
+    { key: "aws", label: "AWS" },
+    { key: "gcp", label: "GCP" },
+    { key: "azure", label: "Azure" },
+    { key: "docker", label: "Docker" },
+    { key: "kubernetes", label: "Kubernetes" },
+    { key: "terraform", label: "Terraform" },
+    { key: "ci/cd", label: "CI/CD" },
+    { key: "github", label: "GitHub" },
+    { key: "git", label: "Git" },
+    { key: "system design", label: "System Design" },
+    { key: "distributed systems", label: "Distributed Systems" },
+    { key: "microservices", label: "Microservices" },
+    { key: "machine learning", label: "Machine Learning" },
+    { key: "deep learning", label: "Deep Learning" },
+    { key: "llm", label: "LLMs / Generative AI" },
+    { key: "pytorch", label: "PyTorch" },
+    { key: "tensorflow", label: "TensorFlow" },
+    { key: "graphql", label: "GraphQL" },
+    { key: "rest api", label: "REST APIs" },
+    { key: "rest", label: "REST" },
+    { key: "html", label: "HTML5" },
+    { key: "css", label: "CSS3" },
+    { key: "tailwind", label: "Tailwind CSS" },
+    { key: "agile", label: "Agile / Scrum" },
+    { key: "scrum", label: "Scrum" },
+    { key: "tdd", label: "TDD" },
+    { key: "unit testing", label: "Unit Testing" },
+    { key: "jest", label: "Jest" },
+    { key: "cypress", label: "Cypress" }
+  ];
+
+  const detectedSkills = [];
+  const seenSkills = new Set();
+  skillVocabulary.forEach(s => {
+    if (lower.includes(s.key) && !seenSkills.has(s.label)) {
+      seenSkills.add(s.label);
+      detectedSkills.push(s.label);
+    }
+  });
+
+  if (!detectedSkills.length) {
+    if (primaryRole === "Software Engineer" || primaryRole === "Backend Engineer") {
+      detectedSkills.push("Problem Solving", "System Architecture", "Clean Code", "APIs");
+    } else if (primaryRole === "Data Scientist") {
+      detectedSkills.push("Python", "Statistical Analysis", "Data Modeling");
+    } else {
+      detectedSkills.push("Problem Solving", "Team Collaboration", "Communication");
+    }
+  }
+
+  // Matched Companies using rich recommendation engine
+  const recommended_companies = recommendCompaniesForCandidate({
+    role: primaryRole,
+    skills: detectedSkills,
+    level,
+    years
+  }).slice(0, 5);
+
+  let headline = `${level === "senior" ? "Senior " : level === "junior" ? "Junior " : ""}${primaryRole}`;
+  if (detectedSkills.length > 0) {
+    headline += ` (${detectedSkills.slice(0, 3).join(", ")})`;
+  }
+
+  return {
+    ok: true,
+    name,
+    headline,
+    target_role: primaryRole,
+    alternative_roles: detectedRoles.filter(r => r !== primaryRole),
+    experience_level: level,
+    years_of_experience: years,
+    skills: detectedSkills,
+    summary: `${name} — ${headline}. Demonstrated proficiency across ${detectedSkills.slice(0, 5).join(", ")}.`,
+    recommended_companies,
+    linkedin_url: extractedUrl || null
+  };
+}
+
+const COMPANY_MATCH_PROFILES = {
+  google: {
+    skills: ["Algorithms", "Data Structures", "Distributed Systems", "System Design", "C++", "Java", "Python", "Go", "Concurrency", "Clean Code"],
+    seniorFit: "Senior L5/L6 System Architecture & Distributed Concurrency Bar",
+    midFit: "L4 Core Engineering, Algorithmic Thinking & Clean Architecture",
+    juniorFit: "L3 Data Structures, Algorithmic Problem Solving & Code Quality",
+    domain: "Planetary-scale distributed systems & search architecture"
+  },
+  amazon: {
+    skills: ["AWS", "Microservices", "System Design", "Distributed Systems", "Java", "Python", "DynamoDB", "REST", "Leadership Principles", "Docker", "DevOps"],
+    seniorFit: "Senior L6 Distributed Scale & Operational Excellence Bar",
+    midFit: "L5 Microservice Architecture, Cloud Design & Low-Level Design",
+    juniorFit: "L4 Object-Oriented Design, Modular Code & Cloud Fundamentals",
+    domain: "High-throughput cloud services & resilient microservices"
+  },
+  microsoft: {
+    skills: ["C#", ".NET", "Azure", "Cloud", "System Design", "TypeScript", "React", "Enterprise", "SQL", "Distributed Systems"],
+    seniorFit: "Principal/Senior Cloud Architect & Scalable Platform Design",
+    midFit: "Software Engineer II Enterprise Microservices & Full-Stack Cloud",
+    juniorFit: "Software Engineer I Cloud Services & Core Systems",
+    domain: "Global enterprise cloud, Azure infra & modern developer platforms"
+  },
+  meta: {
+    skills: ["React", "JavaScript", "TypeScript", "GraphQL", "Python", "C++", "High Throughput", "System Design", "Distributed Systems", "Web Performance"],
+    seniorFit: "E5/E6 Senior System Design & Cross-Functional Product Architecture",
+    midFit: "E4 Full-Stack / Product Architecture & Performance Engineering",
+    juniorFit: "E3 Core Front-End / Product Coding & Rapid Feature Delivery",
+    domain: "Hyper-scale social networking, rich web interfaces & low-latency feeds"
+  },
+  apple: {
+    skills: ["Swift", "C++", "Objective-C", "Python", "Clean Code", "APIs", "System Design", "Security", "Performance", "Software Reliability"],
+    seniorFit: "Senior Software Engineer System Reliability & Core APIs",
+    midFit: "Software Engineer II High-Performance Engineering & Clean Architecture",
+    juniorFit: "Software Engineer I Foundational Coding & Performance Optimization",
+    domain: "Consumer hardware ecosystem, privacy-first software & high-reliability OS services"
+  },
+  netflix: {
+    skills: ["Java", "Spring Boot", "AWS", "Distributed Systems", "Microservices", "Kafka", "Resilience", "System Design", "NoSQL", "DevOps"],
+    seniorFit: "Senior Platform / Distributed Systems Resilience & High-Throughput Streaming",
+    midFit: "Software Engineer Microservices Architecture & Fault Tolerance",
+    juniorFit: "Core Backend & Telemetry Engineering",
+    domain: "Global high-throughput video streaming & chaos-tested microservices"
+  },
+  adobe: {
+    skills: ["React", "TypeScript", "JavaScript", "C++", "WebAssembly", "Cloud", "UI Architecture", "APIs", "Microservices"],
+    seniorFit: "Senior Staff Creative Cloud Architect & Canvas Performance",
+    midFit: "Computer Scientist II Rich UI Architecture & Cloud Sync Services",
+    juniorFit: "Associate Computer Scientist UI Engineering & Web Standards",
+    domain: "Creative suite platforms, real-time collaboration & visual performance"
+  },
+  oracle: {
+    skills: ["Java", "SQL", "Database Internals", "Distributed Storage", "Cloud Infrastructure", "Kubernetes", "Docker", "Linux", "System Design"],
+    seniorFit: "Principal Cloud Engineer Distributed Storage & Database Engines",
+    midFit: "Senior Software Developer Enterprise Cloud & Database APIs",
+    juniorFit: "Software Developer I Core Database & Cloud Infrastructure",
+    domain: "Mission-critical enterprise databases, distributed cloud infrastructure & OCI"
+  },
+  salesforce: {
+    skills: ["Java", "Apex", "Cloud", "Multi-Tenant", "Microservices", "REST", "SQL", "TypeScript", "React", "APIs"],
+    seniorFit: "Lead Software Engineer Multi-Tenant Cloud Architecture & Scale",
+    midFit: "Senior Developer Platform APIs, Integration & Business Logic",
+    juniorFit: "Member of Technical Staff Cloud Services & Platform Features",
+    domain: "World-leading multi-tenant enterprise CRM platform & microservices"
+  },
+  ibm: {
+    skills: ["Kubernetes", "Red Hat", "OpenShift", "Hybrid Cloud", "Java", "Python", "Docker", "Security", "Enterprise", "AI"],
+    seniorFit: "Senior Technical Staff Member Hybrid Cloud & Enterprise Modernization",
+    midFit: "Advisory Software Engineer Container Platforms & Enterprise Cloud",
+    juniorFit: "Associate Software Engineer Core Cloud Services & Enterprise Systems",
+    domain: "Hybrid cloud computing, open-source container infrastructure & mission-critical systems"
+  },
+  goldmansachs: {
+    skills: ["Java", "Python", "Low-Latency", "Financial Systems", "Distributed Systems", "Spring Boot", "Kafka", "SQL", "Security", "Algorithms"],
+    seniorFit: "Vice President Low-Latency Financial Platforms & Distributed Resiliency",
+    midFit: "Associate Quantitative / Distributed Backend Engineering",
+    juniorFit: "Analyst Core Financial Services & Data Pipelines",
+    domain: "Ultra-low-latency financial transaction engines, algorithmic trading & risk analytics"
+  },
+  flipkart: {
+    skills: ["Java", "Go", "Kafka", "Redis", "Microservices", "Distributed Systems", "System Design", "MySQL", "Docker", "High Concurrency"],
+    seniorFit: "SDE 3 High-Concurrency Flash Sale Scale & Distributed Order Systems",
+    midFit: "SDE 2 Resilient Microservices & Catalog Search Architecture",
+    juniorFit: "SDE 1 Core Backend Services & E-Commerce APIs",
+    domain: "High-scale e-commerce transactions, logistics microservices & flash-sale scaling"
+  },
+  zomato: {
+    skills: ["Node.js", "React", "Python", "Go", "Microservices", "Redis", "Kafka", "Elasticsearch", "PostgreSQL", "AWS"],
+    seniorFit: "Principal/Lead Architect Real-Time Dispatch & High-Load Order Processing",
+    midFit: "Software Development Engineer II Real-Time Geolocation & Merchant APIs",
+    juniorFit: "Software Development Engineer I Core Delivery Platforms & APIs",
+    domain: "Real-time food delivery logistics, high-frequency dispatch & consumer discovery"
+  },
+  swiggy: {
+    skills: ["Go", "Java", "Python", "Kafka", "Distributed Systems", "AWS", "Microservices", "Redis", "System Design", "Docker"],
+    seniorFit: "Lead Architect AI-driven Logistics & Real-Time Delivery Optimization",
+    midFit: "Software Development Engineer II High-Volume Event Streams & Routing",
+    juniorFit: "Software Development Engineer I Backend Services & Core APIs",
+    domain: "Hyper-local on-demand delivery, graph routing & distributed event processing"
+  },
+  paytm: {
+    skills: ["Java", "Node.js", "Spring Boot", "Kafka", "MySQL", "Redis", "Security", "Payment Systems", "Microservices", "High Throughput"],
+    seniorFit: "Engineering Manager / Lead High-Volume Payment Gateways & FinTech Scale",
+    midFit: "Senior Software Engineer Financial Ledger & Transaction Security",
+    juniorFit: "Software Engineer I Payment Microservices & Merchant APIs",
+    domain: "High-throughput UPI/fintech payments, transaction ledgers & regulatory security"
+  },
+  tcs: {
+    skills: ["Java", "Spring Boot", "Python", "SQL", "Full Stack", "React", "Cloud", "Agile", "APIs", "Problem Solving"],
+    seniorFit: "Lead Consultant Enterprise Digital Transformation & Modernization",
+    midFit: "IT Analyst Full-Stack Enterprise Services & Microservices",
+    juniorFit: "Assistant System Engineer Core Enterprise Programming & Cloud Support",
+    domain: "Global enterprise IT consulting, cloud migrations & full-stack development"
+  },
+  infosys: {
+    skills: ["Java", "Python", "React", "Angular", "SQL", "Cloud", "Microservices", "Agile", "DevOps", "Problem Solving"],
+    seniorFit: "Technology Lead / Architect Cloud Migration & Enterprise Frameworks",
+    midFit: "Technology Analyst Scalable Application Services & Modern Web",
+    juniorFit: "Systems Engineer Core Programming & Cloud Modernization",
+    domain: "Enterprise digital services, next-generation cloud architectures & agile solutions"
+  },
+  wipro: {
+    skills: ["Java", "Python", "Cloud", "DevOps", "Docker", "Kubernetes", "SQL", "Full Stack", "Agile", "System Design"],
+    seniorFit: "Lead Architect Enterprise Cloud Strategies & Infrastructure Automation",
+    midFit: "Senior Project Engineer Cloud Automation & Full-Stack Solutions",
+    juniorFit: "Project Engineer Software Development & Cloud Pipelines",
+    domain: "Global infrastructure services, hybrid cloud integrations & digital consulting"
+  },
+  accenture: {
+    skills: ["Java", "React", "Python", "Cloud", "AWS", "Azure", "Microservices", "DevOps", "Agile", "Product Thinking"],
+    seniorFit: "Associate Director / Tech Lead Enterprise Cloud Innovation",
+    midFit: "Application Development Senior Analyst Cloud Solutions & Modernization",
+    juniorFit: "Application Development Associate Core Enterprise Delivery & Testing",
+    domain: "Global management consulting, cloud-first technology services & enterprise agile"
+  },
+  cognizant: {
+    skills: ["Java", "Python", "SQL", "Full Stack", "React", "Node.js", "Cloud", "Agile", "QA", "Problem Solving"],
+    seniorFit: "Senior Manager / Architect Scalable Enterprise Modernization",
+    midFit: "Associate Full-Stack Development & Cloud API Delivery",
+    juniorFit: "Programmer Analyst Core Engineering & Automated Quality Delivery",
+    domain: "Digital transformation, IoT & healthcare/financial technology modernization"
+  }
+};
+
+function recommendCompaniesForCandidate({ role = "Software Engineer", skills = [], level = "mid", years = null }) {
+  const normRole = (role || "Software Engineer").trim();
+  const normLevel = (level || "mid").toLowerCase();
+  const candSkills = Array.isArray(skills) ? skills : [];
+  const candSkillsLower = candSkills.map(s => s.toLowerCase());
+
+  const results = [];
+
+  for (const comp of QUESTION_BANK) {
+    const profile = COMPANY_MATCH_PROFILES[comp.id] || {
+      skills: ["Problem Solving", "Clean Code", "System Design", "Agile"],
+      seniorFit: "Senior Architecture & Technical Leadership",
+      midFit: "Core Engineering & Feature Delivery",
+      juniorFit: "Foundational Problem Solving & Code Quality",
+      domain: comp.focus || "Technology Solutions"
+    };
+
+    let score = 55; // base score
+    const matchingSkills = [];
+
+    // 1. Role match: +20 for exact role, +12 for related
+    const compRoles = Object.keys(comp.roles || {});
+    if (compRoles.includes(normRole)) {
+      score += 20;
+    } else if (compRoles.some(r => r.toLowerCase().includes("engineer") && normRole.toLowerCase().includes("engineer"))) {
+      score += 12;
+    } else if (compRoles.length > 0) {
+      score += 6;
+    }
+
+    // 2. Skill overlap
+    profile.skills.forEach(reqSkill => {
+      const match = candSkillsLower.find(cs => cs === reqSkill.toLowerCase() || cs.includes(reqSkill.toLowerCase()) || reqSkill.toLowerCase().includes(cs));
+      if (match) {
+        matchingSkills.push(reqSkill);
+        score += 5;
+      }
+    });
+
+    // Also check company focus string
+    const focusLower = (comp.focus || "").toLowerCase();
+    candSkillsLower.forEach(cs => {
+      if (focusLower.includes(cs) && !matchingSkills.includes(cs)) {
+        const orig = candSkills[candSkillsLower.indexOf(cs)];
+        if (orig) matchingSkills.push(orig);
+        score += 3;
+      }
+    });
+
+    // 3. Experience level calibration
+    let fitText = "";
+    if (normLevel === "senior" || (years && years >= 5)) {
+      fitText = profile.seniorFit;
+      if (["Hard", "Very Hard"].includes(comp.difficulty)) score += 8;
+    } else if (normLevel === "junior" || (years && years < 2)) {
+      fitText = profile.juniorFit;
+      if (["Medium", "Easy"].includes(comp.difficulty)) score += 8;
+    } else {
+      fitText = profile.midFit;
+      score += 5;
+    }
+
+    // Bound match percentage between 75% and 98%
+    const matchPercent = Math.min(98, Math.max(75, Math.round(score)));
+
+    // Generate tailored reason
+    let reason = "";
+    if (matchingSkills.length > 0) {
+      reason = `Matches your ${normLevel.toUpperCase()} background with direct alignment in ${matchingSkills.slice(0, 3).join(", ")}.`;
+    } else {
+      reason = `Direct alignment for ${normRole} rehearsal panels and ${profile.domain}.`;
+    }
+
+    results.push({
+      id: comp.id,
+      name: comp.name,
+      accent: comp.accent || "#FFB020",
+      difficulty: comp.difficulty,
+      match_percent: matchPercent,
+      matching_skills: matchingSkills.slice(0, 5),
+      experience_fit: fitText,
+      domain: profile.domain,
+      reason: reason,
+      recommended_role: compRoles.includes(normRole) ? normRole : (compRoles[0] || "Software Engineer")
+    });
+  }
+
+  // Sort descending by match percentage
+  results.sort((a, b) => b.match_percent - a.match_percent);
+  return results;
+}
+
+app.post("/api/recommend-companies", (req, res) => {
+  try {
+    const { role, skills, level, years } = req.body || {};
+    const recommendations = recommendCompaniesForCandidate({ role, skills, level, years });
+    res.json({ ok: true, recommendations });
+  } catch (err) {
+    console.error("Recommend companies error:", err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post("/api/parse-bio", async (req, res) => {
+  try {
+    const { text, url, file_data, file_name, mime_type } = req.body || {};
+    if (file_data) {
+      const result = await parseResumeDocument({
+        fileData: file_data,
+        fileName: file_name || "resume.pdf",
+        mimeType: mime_type || ""
+      });
+      return res.json(result);
+    }
+    const inputContent = (text || url || "").trim();
+    if (!inputContent) {
+      return res.status(400).json({ error: "Please provide a resume file (PDF/PNG), bio text, or LinkedIn profile URL." });
+    }
+
+    const parsed = parseCandidateBio(inputContent);
+    res.json(parsed);
+  } catch (err) {
+    console.error("Bio parsing error:", err);
+    res.status(500).json({ error: "Failed to parse profile", message: err.message });
+  }
+});
+
+async function parseResumeDocument({ fileData, fileName = "resume.pdf", mimeType = "" }) {
+  let cleanBase64 = fileData || "";
+  let detectedMime = mimeType || "";
+
+  if (cleanBase64.startsWith("data:")) {
+    const commaIdx = cleanBase64.indexOf(",");
+    if (commaIdx !== -1) {
+      const header = cleanBase64.slice(0, commaIdx);
+      cleanBase64 = cleanBase64.slice(commaIdx + 1);
+      const mimeMatch = header.match(/data:([^;]+)/);
+      if (mimeMatch && mimeMatch[1]) {
+        detectedMime = mimeMatch[1].toLowerCase();
+      }
+    }
+  }
+
+  const ext = path.extname(fileName || "").toLowerCase();
+  const isPdf = detectedMime.includes("pdf") || ext === ".pdf";
+  const isPng = detectedMime.includes("png") || ext === ".png";
+  const isImage = isPng || detectedMime.includes("image") || [".jpg", ".jpeg", ".webp"].includes(ext);
+
+  const fileBuffer = Buffer.from(cleanBase64, "base64");
+  const ai = getGenAI();
+
+  // 1. PDF Handler
+  if (isPdf) {
+    let localExtractedText = "";
+    try {
+      const parser = new PDFParse({ data: fileBuffer });
+      await parser.load();
+      const textRes = await parser.getText();
+      localExtractedText = textRes?.text?.trim() || "";
+    } catch (pdfErr) {
+      console.warn("Local PDFParse warning:", pdfErr.message);
+    }
+
+    if (ai) {
+      try {
+        const prompt = `You are a world-class technical recruiter analyzing a candidate's resume PDF document.
+Extract the candidate's professional profile into strict JSON with these exact keys:
+{
+  "name": "Candidate's full name",
+  "headline": "Current title or professional headline",
+  "target_role": "One of: Software Engineer, Frontend Engineer, Backend Engineer, DevOps Engineer, Data Scientist, Data Analyst, Product Manager, QA Engineer",
+  "alternative_roles": ["other suitable roles"],
+  "experience_level": "junior", "mid", or "senior",
+  "years_of_experience": number or null,
+  "skills": ["Array of 6 to 15 key technical skills, languages, frameworks"],
+  "summary": "2-sentence executive summary of their background, domain expertise, and key accomplishments.",
+  "recommended_companies": [
+    {"name": "Company Name", "reason": "Why candidate is a strong fit"}
+  ]
+}
+Return ONLY a valid JSON object. Do not include markdown code block markers or extra text.`;
+
+        const response = await ai.models.generateContent({
+          model: "gemini-3.6-flash",
+          contents: [
+            {
+              inlineData: {
+                data: cleanBase64,
+                mimeType: "application/pdf"
+              }
+            },
+            prompt
+          ]
+        });
+
+        const rawAiText = response.text?.trim() || "";
+        const jsonMatch = rawAiText.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const aiParsed = JSON.parse(jsonMatch[0]);
+          return {
+            ok: true,
+            format: "pdf",
+            file_name: fileName,
+            name: aiParsed.name || "Candidate",
+            headline: aiParsed.headline || `${aiParsed.target_role || 'Software Engineer'}`,
+            target_role: aiParsed.target_role || "Software Engineer",
+            alternative_roles: aiParsed.alternative_roles || [],
+            experience_level: (aiParsed.experience_level || "mid").toLowerCase(),
+            years_of_experience: aiParsed.years_of_experience || null,
+            skills: Array.isArray(aiParsed.skills) && aiParsed.skills.length ? aiParsed.skills : ["Problem Solving", "System Architecture", "Clean Code"],
+            summary: aiParsed.summary || `${aiParsed.name || 'Candidate'} — ${aiParsed.target_role || 'Software Engineer'}.`,
+            recommended_companies: recommendCompaniesForCandidate({
+              role: aiParsed.target_role || "Software Engineer",
+              skills: aiParsed.skills || [],
+              level: aiParsed.experience_level || "mid",
+              years: aiParsed.years_of_experience
+            }).slice(0, 5)
+          };
+        }
+      } catch (aiErr) {
+        console.warn("Gemini PDF parsing warning:", aiErr.message);
+      }
+    }
+
+    if (localExtractedText && localExtractedText.length > 20) {
+      const fallbackParsed = parseCandidateBio(localExtractedText);
+      return {
+        ...fallbackParsed,
+        format: "pdf",
+        file_name: fileName,
+        extracted_text_preview: localExtractedText.slice(0, 300)
+      };
+    }
+
+    throw new Error("Unable to extract text from the uploaded PDF resume. Please ensure it contains readable text or try exporting as PNG.");
+  }
+
+  // 2. PNG / Image Handler
+  if (isImage) {
+    if (!ai) {
+      throw new Error("AI Vision processing is temporarily unavailable. Please upload a PDF resume or paste your bio summary.");
+    }
+
+    const prompt = `You are a world-class technical recruiter and OCR specialist analyzing a candidate's resume image (PNG format).
+Read the resume image and extract the candidate's professional profile into strict JSON with these exact keys:
+{
+  "name": "Candidate's full name",
+  "headline": "Current title or professional headline",
+  "target_role": "One of: Software Engineer, Frontend Engineer, Backend Engineer, DevOps Engineer, Data Scientist, Data Analyst, Product Manager, QA Engineer",
+  "alternative_roles": ["other suitable roles"],
+  "experience_level": "junior", "mid", or "senior",
+  "years_of_experience": number or null,
+  "skills": ["Array of 6 to 15 key technical skills, languages, frameworks"],
+  "summary": "2-sentence executive summary of their background, domain expertise, and key accomplishments.",
+  "recommended_companies": [
+    {"name": "Company Name", "reason": "Why candidate is a strong fit"}
+  ]
+}
+Return ONLY a valid JSON object. Do not include markdown code block markers or extra text.`;
+
+    let rawAiText = "";
+    const modelsToTry = ["gemini-3.6-flash", "gemini-3.8-flash"];
+    let lastErr = null;
+
+    for (const modelName of modelsToTry) {
+      try {
+        const response = await ai.models.generateContent({
+          model: modelName,
+          contents: [
+            {
+              inlineData: {
+                data: cleanBase64,
+                mimeType: isPng ? "image/png" : (detectedMime || "image/jpeg")
+              }
+            },
+            prompt
+          ]
+        });
+        rawAiText = response.text?.trim() || "";
+        if (rawAiText) break;
+      } catch (err) {
+        lastErr = err;
+        console.warn(`Vision model ${modelName} warning:`, err.message);
+      }
+    }
+
+    const jsonMatch = rawAiText.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const aiParsed = JSON.parse(jsonMatch[0]);
+      return {
+        ok: true,
+        format: isPng ? "png" : "image",
+        file_name: fileName,
+        name: aiParsed.name || "Candidate",
+        headline: aiParsed.headline || `${aiParsed.target_role || 'Software Engineer'}`,
+        target_role: aiParsed.target_role || "Software Engineer",
+        alternative_roles: aiParsed.alternative_roles || [],
+        experience_level: (aiParsed.experience_level || "mid").toLowerCase(),
+        years_of_experience: aiParsed.years_of_experience || null,
+        skills: Array.isArray(aiParsed.skills) && aiParsed.skills.length ? aiParsed.skills : ["Problem Solving", "System Architecture", "Clean Code"],
+        summary: aiParsed.summary || `${aiParsed.name || 'Candidate'} — ${aiParsed.target_role || 'Software Engineer'}.`,
+        recommended_companies: recommendCompaniesForCandidate({
+          role: aiParsed.target_role || "Software Engineer",
+          skills: aiParsed.skills || [],
+          level: aiParsed.experience_level || "mid",
+          years: aiParsed.years_of_experience
+        }).slice(0, 5)
+      };
+    }
+
+    if (lastErr && (lastErr.message?.includes("503") || lastErr.message?.includes("high demand") || lastErr.message?.includes("UNAVAILABLE"))) {
+      throw new Error("The AI Vision service is experiencing temporary peak demand. Please retry in a few moments, or upload your resume in PDF format for instant processing.");
+    }
+
+    throw new Error("Unable to parse text from the uploaded PNG image. Please ensure the image has good lighting and readable text, or try uploading in PDF format.");
+  }
+
+  // 3. Plain text / Markdown fallback
+  const textContent = fileBuffer.toString("utf-8");
+  const parsed = parseCandidateBio(textContent);
+  return {
+    ...parsed,
+    format: "text",
+    file_name: fileName
+  };
+}
+
+app.post("/api/upload-resume", async (req, res) => {
+  try {
+    const { file_data, file_name, mime_type, text } = req.body || {};
+    if (!file_data && !text) {
+      return res.status(400).json({ error: "Please provide a resume file in PDF (.pdf) or PNG (.png) format, or paste your bio." });
+    }
+
+    if (file_data) {
+      const result = await parseResumeDocument({
+        fileData: file_data,
+        fileName: file_name || "resume.pdf",
+        mimeType: mime_type || ""
+      });
+      return res.json(result);
+    }
+
+    const parsed = parseCandidateBio(text);
+    res.json(parsed);
+  } catch (err) {
+    console.error("Resume upload error:", err);
+    res.status(500).json({ error: "Failed to parse resume file", message: err.message });
   }
 });
 
