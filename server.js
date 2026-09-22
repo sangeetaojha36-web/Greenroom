@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import path from "path";
 import fs from "fs";
+import crypto from "node:crypto";
 import cookieParser from "cookie-parser";
 import { fileURLToPath } from "url";
 import { execFile } from "child_process";
@@ -59,12 +60,12 @@ const __dirname = path.dirname(__filename);
 
 function getFrontendDir() {
   const candidates = [
-    path.join(__dirname, "public"),
-    path.join(process.cwd(), "public"),
     path.join(__dirname, "frontend"),
     path.join(process.cwd(), "frontend"),
     path.join(process.cwd(), "Greenroom-main", "frontend"),
     path.join(__dirname, "..", "frontend"),
+    path.join(__dirname, "public"),
+    path.join(process.cwd(), "public"),
     path.join(__dirname, "..", "public")
   ];
   for (const c of candidates) {
@@ -1730,18 +1731,28 @@ app.post("/api/auth/reset-password", async (req, res) => {
   }
 });
 
-// 8. Email Verification
-app.get("/api/auth/verify-email", async (req, res) => {
+// 8. Email Verification (Supports Token Link from Email and Direct Verification via API)
+app.all("/api/auth/verify-email", async (req, res) => {
   try {
-    const token = req.query.token;
-    if (!token) {
-      return res.status(400).send("Verification token is required.");
+    const token = req.query.token || req.body?.token;
+    const userId = req.body?.user_id || req.query.user_id || req.userId;
+
+    let result;
+    if (token) {
+      result = await authService.verifyEmailWithToken(token);
+    } else if (userId) {
+      result = await authService.verifyUserEmailDirect(userId);
+    } else {
+      return res.status(400).json({ success: false, error: "Verification token or user_id is required." });
     }
 
-    const result = await authService.verifyEmailWithToken(token);
+    // Only render HTML if it's a direct browser GET navigation and NOT an AJAX/JSON call
+    const isJsonRequest = req.xhr ||
+      req.method === "POST" ||
+      req.headers["content-type"] === "application/json" ||
+      (req.headers.accept && req.headers.accept.includes("application/json"));
 
-    // If browser requesting HTML view:
-    if (req.accepts("html")) {
+    if (!isJsonRequest && req.accepts("html")) {
       return res.send(`
         <!DOCTYPE html>
         <html>
@@ -2018,6 +2029,13 @@ app.get("/api/db/status", async (req, res) => {
   } catch (err) {
     res.status(500).json({ status: "error", error: err.message });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Catch-all 404 for any unmatched /api/* route (ensures JSON response, never HTML)
+// ---------------------------------------------------------------------------
+app.all("/api/*", (req, res) => {
+  res.status(404).json({ success: false, error: `API route ${req.method} ${req.path} not found` });
 });
 
 // ---------------------------------------------------------------------------

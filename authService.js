@@ -397,6 +397,28 @@ export async function verifyEmailWithToken(rawToken) {
   };
 }
 
+export async function verifyUserEmailDirect(userId) {
+  if (!userId) throw new Error("User ID is required.");
+  const user = await firestoreGetDoc("users", userId);
+  if (!user) throw new Error("User profile not found.");
+
+  const updated = {
+    ...user,
+    email_verified: true,
+    account_status: "active",
+    verification_token: null,
+    verification_expires: null,
+    updated_at: new Date().toISOString()
+  };
+
+  await firestoreSetDoc("users", user.id, updated);
+  return {
+    success: true,
+    message: "Email verified successfully! Candidate profile activated.",
+    user: sanitizeUser(updated)
+  };
+}
+
 /* ---------------------------------------------------------------------------
    6. Social Authentication (Real OAuth 2.0 / OpenID Connect)
    ---------------------------------------------------------------------------

@@ -19,6 +19,36 @@ function resolveApiBaseUrl() {
 
 const API = resolveApiBaseUrl();
 
+function safeJsonParse(str, fallback = null) {
+  if (!str) return fallback;
+  try {
+    return JSON.parse(str);
+  } catch (e) {
+    return fallback;
+  }
+}
+
+async function safeFetchJson(url, options = {}) {
+  try {
+    const res = await fetch(url, options);
+    let data = null;
+    const contentType = res.headers.get("content-type") || "";
+    if (contentType.includes("application/json")) {
+      data = await res.json().catch(() => null);
+    } else {
+      const text = await res.text().catch(() => "");
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        data = { success: false, error: text || `HTTP ${res.status}` };
+      }
+    }
+    return { ok: res.ok, status: res.status, data: data || {} };
+  } catch (netErr) {
+    return { ok: false, status: 0, data: { success: false, error: netErr.message || "Network request failed" } };
+  }
+}
+
 const PANEL_INTERVIEWERS = [
   { name: "Alex Chen", role: "Principal Tech Lead", persona: "technical", avatar: "💻", tag: "Tech Lead" },
   { name: "Priya Sharma", role: "HR Business Partner", persona: "friendly", avatar: "🤝", tag: "Culture & Fit" },
@@ -63,7 +93,7 @@ const state = {
   searchQuery: "",
   weakSpots: [],
   upcomingInterview: null,
-  recommendedCompanies: JSON.parse(localStorage.getItem("gr_recommended_companies") || "[]"),
+  recommendedCompanies: safeJsonParse(localStorage.getItem("gr_recommended_companies"), []),
   companyFilter: "all",
   achievements: {
     first_interview: false,
@@ -930,8 +960,8 @@ function renderImportedProfileBanner() {
   const banner = $("#importedProfileBanner");
   if (!banner) return;
 
-  const savedSkills = JSON.parse(localStorage.getItem("gr_imported_skills") || "[]");
-  const savedRecs = JSON.parse(localStorage.getItem("gr_recommended_companies") || "[]");
+  const savedSkills = safeJsonParse(localStorage.getItem("gr_imported_skills"), []);
+  const savedRecs = safeJsonParse(localStorage.getItem("gr_recommended_companies"), []);
   if (savedRecs.length && (!state.recommendedCompanies || !state.recommendedCompanies.length)) {
     state.recommendedCompanies = savedRecs;
   }
@@ -1159,7 +1189,7 @@ function savePeerMockNotes(){
    ------------------------------------------------------------------------- */
 function saveSession(report){
   if (state.isReadOnlyShared) return;
-  const sessions = JSON.parse(localStorage.getItem("greenroom_sessions") || "[]");
+  const sessions = safeJsonParse(localStorage.getItem("greenroom_sessions"), []);
   const session = {
     company: state.activeCompany?.name || "Unknown",
     companyId: state.activeCompany?.id || "unknown",
@@ -1187,7 +1217,7 @@ function saveSession(report){
 }
 
 function renderSessionHistory(){
-  const sessions = JSON.parse(localStorage.getItem("greenroom_sessions") || "[]");
+  const sessions = safeJsonParse(localStorage.getItem("greenroom_sessions"), []);
   const list = $("#sessionList");
   if (!list) return;
   list.innerHTML = "";
@@ -1218,7 +1248,7 @@ function renderSessionComparison(currentReport){
   const deltasContainer = $("#compDeltas");
   if (!deltasContainer) return;
 
-  const sessions = JSON.parse(localStorage.getItem("greenroom_sessions") || "[]");
+  const sessions = safeJsonParse(localStorage.getItem("greenroom_sessions"), []);
   const currentCompany = state.activeCompany?.name || "";
   const prevSession = sessions.find((s, idx) => idx > 0 && s.company === currentCompany);
 

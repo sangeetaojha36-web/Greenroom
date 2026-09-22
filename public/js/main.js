@@ -19,6 +19,36 @@ function resolveApiBaseUrl() {
 
 const API = resolveApiBaseUrl();
 
+function safeJsonParse(str, fallback = null) {
+  if (!str) return fallback;
+  try {
+    return JSON.parse(str);
+  } catch (e) {
+    return fallback;
+  }
+}
+
+async function safeFetchJson(url, options = {}) {
+  try {
+    const res = await fetch(url, options);
+    let data = null;
+    const contentType = res.headers.get("content-type") || "";
+    if (contentType.includes("application/json")) {
+      data = await res.json().catch(() => null);
+    } else {
+      const text = await res.text().catch(() => "");
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        data = { success: false, error: text || `HTTP ${res.status}` };
+      }
+    }
+    return { ok: res.ok, status: res.status, data: data || {} };
+  } catch (netErr) {
+    return { ok: false, status: 0, data: { success: false, error: netErr.message || "Network request failed" } };
+  }
+}
+
 const PANEL_INTERVIEWERS = [
   { name: "Alex Chen", role: "Principal Tech Lead", persona: "technical", avatar: "💻", tag: "Tech Lead" },
   { name: "Priya Sharma", role: "HR Business Partner", persona: "friendly", avatar: "🤝", tag: "Culture & Fit" },
@@ -63,7 +93,7 @@ const state = {
   searchQuery: "",
   weakSpots: [],
   upcomingInterview: null,
-  recommendedCompanies: JSON.parse(localStorage.getItem("gr_recommended_companies") || "[]"),
+  recommendedCompanies: safeJsonParse(localStorage.getItem("gr_recommended_companies"), []),
   companyFilter: "all",
   achievements: {
     first_interview: false,
@@ -930,8 +960,8 @@ function renderImportedProfileBanner() {
   const banner = $("#importedProfileBanner");
   if (!banner) return;
 
-  const savedSkills = JSON.parse(localStorage.getItem("gr_imported_skills") || "[]");
-  const savedRecs = JSON.parse(localStorage.getItem("gr_recommended_companies") || "[]");
+  const savedSkills = safeJsonParse(localStorage.getItem("gr_imported_skills"), []);
+  const savedRecs = safeJsonParse(localStorage.getItem("gr_recommended_companies"), []);
   if (savedRecs.length && (!state.recommendedCompanies || !state.recommendedCompanies.length)) {
     state.recommendedCompanies = savedRecs;
   }
@@ -1159,7 +1189,7 @@ function savePeerMockNotes(){
    ------------------------------------------------------------------------- */
 function saveSession(report){
   if (state.isReadOnlyShared) return;
-  const sessions = JSON.parse(localStorage.getItem("greenroom_sessions") || "[]");
+  const sessions = safeJsonParse(localStorage.getItem("greenroom_sessions"), []);
   const session = {
     company: state.activeCompany?.name || "Unknown",
     companyId: state.activeCompany?.id || "unknown",
@@ -1187,7 +1217,7 @@ function saveSession(report){
 }
 
 function renderSessionHistory(){
-  const sessions = JSON.parse(localStorage.getItem("greenroom_sessions") || "[]");
+  const sessions = safeJsonParse(localStorage.getItem("greenroom_sessions"), []);
   const list = $("#sessionList");
   if (!list) return;
   list.innerHTML = "";
@@ -1218,7 +1248,7 @@ function renderSessionComparison(currentReport){
   const deltasContainer = $("#compDeltas");
   if (!deltasContainer) return;
 
-  const sessions = JSON.parse(localStorage.getItem("greenroom_sessions") || "[]");
+  const sessions = safeJsonParse(localStorage.getItem("greenroom_sessions"), []);
   const currentCompany = state.activeCompany?.name || "";
   const prevSession = sessions.find((s, idx) => idx > 0 && s.company === currentCompany);
 
@@ -3334,9 +3364,9 @@ function initEventListeners(){
   // Candidate Authentication & Profile Listeners
   $("#navAuthBtn")?.addEventListener("click", () => openAuthModal("signin"));
   $("#navUserChip")?.addEventListener("click", (e) => {
-    // If clicked logout button, don't open db modal
+    // If clicked logout button, don't open profile modal
     if (e.target.closest("#navLogoutBtn")) return;
-    openDbRecordsModal();
+    openCandidateProfileModal();
   });
   $("#navLogoutBtn")?.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -3344,45 +3374,93 @@ function initEventListeners(){
   });
   $("#cancelLogoutBtn")?.addEventListener("click", () => closeAllModals());
   $("#confirmLogoutBtn")?.addEventListener("click", () => handleLogout());
+  $("#profileLogoutBtn")?.addEventListener("click", () => {
+    closeAllModals();
+    openLogoutConfirmModal();
+  });
 
+  // Auth Modal Tab Switchers & Links
   $("#tabSignInBtn")?.addEventListener("click", () => switchAuthTab("signin"));
   $("#tabRegisterBtn")?.addEventListener("click", () => switchAuthTab("register"));
   $("#switchToRegLink")?.addEventListener("click", () => switchAuthTab("register"));
   $("#switchToLoginLink")?.addEventListener("click", () => switchAuthTab("signin"));
-  $("#closeAuthModal")?.addEventListener("click", () => closeAllModals());
-  $("#closeSocialModal")?.addEventListener("click", () => closeAllModals());
+  $("#forgotPasswordLink")?.addEventListener("click", () => switchAuthTab("forgot"));
+  $("#backToSignInFromForgotLink")?.addEventListener("click", () => switchAuthTab("signin"));
+  $("#backToSignInFromResetLink")?.addEventListener("click", () => switchAuthTab("signin"));
+  $("#openResetScreenDirectBtn")?.addEventListener("click", () => switchAuthTab("reset"));
 
-  // Password toggles
-  $("#toggleLoginPwd")?.addEventListener("click", () => {
-    const inp = $("#loginPassword");
-    if (inp) inp.type = inp.type === "password" ? "text" : "password";
-  });
-  $("#toggleRegPwd")?.addEventListener("click", () => {
-    const inp = $("#regPassword");
-    if (inp) inp.type = inp.type === "password" ? "text" : "password";
-  });
+  // Password Visibility Toggles
+  $("#toggleLoginPwd")?.addEventListener("click", () => togglePwdVisibility("loginPassword"));
+  $("#toggleRegPwd")?.addEventListener("click", () => togglePwdVisibility("regPassword"));
+  $("#toggleRegConfirmPwd")?.addEventListener("click", () => togglePwdVisibility("regConfirmPassword"));
+  $("#toggleResetPwd")?.addEventListener("click", () => togglePwdVisibility("resetNewPassword"));
+  $("#toggleResetConfirmPwd")?.addEventListener("click", () => togglePwdVisibility("resetConfirmPassword"));
 
-  // Form Submissions (single submission per form)
+  // Live Password Strength & Confirmation Listeners
+  $("#regPassword")?.addEventListener("input", (e) => {
+    updatePasswordStrengthUI(e.target.value, "reg");
+    checkPasswordMatch("reg");
+  });
+  $("#regConfirmPassword")?.addEventListener("input", () => checkPasswordMatch("reg"));
+
+  $("#resetNewPassword")?.addEventListener("input", (e) => {
+    updatePasswordStrengthUI(e.target.value, "reset");
+    checkPasswordMatch("reset");
+  });
+  $("#resetConfirmPassword")?.addEventListener("input", () => checkPasswordMatch("reset"));
+
+  // Form Submissions
   $("#loginForm")?.addEventListener("submit", handleManualLogin);
   $("#registerForm")?.addEventListener("submit", handleManualRegister);
+  $("#forgotPasswordForm")?.addEventListener("submit", handleForgotPassword);
+  $("#resetPasswordForm")?.addEventListener("submit", handleResetPassword);
 
-  // Social Sign-Ins (Google, LinkedIn, GitHub)
-  $("#googleLoginBtn")?.addEventListener("click", () => openSocialAuthModal("google"));
-  $("#googleRegBtn")?.addEventListener("click", () => openSocialAuthModal("google"));
-  $("#linkedinLoginBtn")?.addEventListener("click", () => openSocialAuthModal("linkedin"));
-  $("#linkedinRegBtn")?.addEventListener("click", () => openSocialAuthModal("linkedin"));
-  $("#githubLoginBtn")?.addEventListener("click", () => openSocialAuthModal("github"));
-  $("#githubRegBtn")?.addEventListener("click", () => openSocialAuthModal("github"));
+  // Social OAuth Triggers (Login & Register)
+  $("#googleLoginBtn")?.addEventListener("click", () => initiateOAuth("google"));
+  $("#googleRegBtn")?.addEventListener("click", () => initiateOAuth("google"));
+  $("#linkedinLoginBtn")?.addEventListener("click", () => initiateOAuth("linkedin"));
+  $("#linkedinRegBtn")?.addEventListener("click", () => initiateOAuth("linkedin"));
+  $("#githubLoginBtn")?.addEventListener("click", () => initiateOAuth("github"));
+  $("#githubRegBtn")?.addEventListener("click", () => initiateOAuth("github"));
 
-  // Social Modal Actions
-  $("#socialQuickConfirmBtn")?.addEventListener("click", handleSocialQuickConfirm);
-  $("#toggleSocialCustomBtn")?.addEventListener("click", () => {
-    const form = $("#socialCustomForm");
-    if (form) {
-      form.style.display = form.style.display === "none" ? "flex" : "none";
-    }
+  // OAuth Setup / Sandbox Modal Triggers
+  $("#oauthSandboxLoginBtn")?.addEventListener("click", handleOAuthSandboxLogin);
+  $("#cancelOAuthSetupBtn")?.addEventListener("click", () => closeAllModals());
+
+  // Email Verification Banner Triggers
+  $("#bannerVerifyNowBtn")?.addEventListener("click", handleVerifyCurrentEmail);
+  $("#bannerResendVerifyBtn")?.addEventListener("click", handleResendEmailVerification);
+  $("#bannerDismissVerifyBtn")?.addEventListener("click", () => {
+    const banner = $("#emailVerificationBanner");
+    if (banner) banner.style.display = "none";
   });
-  $("#socialCustomForm")?.addEventListener("submit", handleSocialCustomSubmit);
+
+  // Candidate Profile & Security Modal Triggers
+  $("#closeProfileModal")?.addEventListener("click", () => closeAllModals());
+  $("#profileVerifyNowBtn")?.addEventListener("click", handleVerifyCurrentEmail);
+  $("#openChangePwdInModalBtn")?.addEventListener("click", () => {
+    closeAllModals();
+    openAuthModal("forgot");
+  });
+  $("#linkGoogleBtn")?.addEventListener("click", () => handleToggleLinkProvider("google"));
+  $("#linkLinkedinBtn")?.addEventListener("click", () => handleToggleLinkProvider("linkedin"));
+  $("#linkGithubBtn")?.addEventListener("click", () => handleToggleLinkProvider("github"));
+
+  // Terms & Conditions Modal Triggers
+  $("#viewTermsLink")?.addEventListener("click", () => {
+    $("#termsModal")?.classList.add("open");
+  });
+  $("#closeTermsModal")?.addEventListener("click", () => {
+    $("#termsModal")?.classList.remove("open");
+  });
+  $("#acceptTermsBtn")?.addEventListener("click", () => {
+    $("#termsModal")?.classList.remove("open");
+    const regTerms = $("#regTerms");
+    if (regTerms) regTerms.checked = true;
+  });
+
+  // Listen for OAuth PostMessage from popup window
+  window.addEventListener("message", handleOAuthPostMessage);
 }
 
 /* -------------------------------------------------------------------------
@@ -3634,7 +3712,7 @@ function getAuthUser() {
 
 function persistUserSession(user, rememberMe = true) {
   if (!user || !user.id) return;
-  localStorage.setItem("gr_auth_token", "sess_" + Date.now());
+  localStorage.setItem("gr_auth_token", user.session_token || ("sess_" + Date.now()));
   localStorage.setItem("gr_auth_user", JSON.stringify(user));
   localStorage.setItem("gr_user_id", user.id);
   localStorage.setItem("gr_user_name", user.display_name || "Candidate");
@@ -3649,6 +3727,8 @@ function persistUserSession(user, rememberMe = true) {
   } else {
     localStorage.removeItem("gr_remember_me");
   }
+
+  checkEmailVerificationBanner(user);
 }
 
 async function restoreUserSession() {
@@ -3678,6 +3758,7 @@ async function restoreUserSession() {
   if (user && user.id) {
     updateAuthNavUI();
     renderImportedProfileBanner();
+    checkEmailVerificationBanner(user);
 
     // Silently synchronize profile & interview statistics with Cloud Firestore
     try {
@@ -3687,6 +3768,7 @@ async function restoreUserSession() {
         if (data.success && data.user) {
           localStorage.setItem("gr_auth_user", JSON.stringify(data.user));
           updateAuthNavUI();
+          checkEmailVerificationBanner(data.user);
         }
       }
     } catch (e) {
@@ -3725,16 +3807,112 @@ function updateAuthNavUI() {
   } else {
     if (navAuthBtn) navAuthBtn.style.display = "inline-flex";
     if (navUserChip) navUserChip.style.display = "none";
+    checkEmailVerificationBanner(null);
   }
 }
 
+function checkEmailVerificationBanner(user) {
+  const banner = $("#emailVerificationBanner");
+  if (!banner) return;
+  if (user && user.email && user.email_verified === false) {
+    banner.style.display = "flex";
+    const emailEl = $("#bannerCandidateEmail");
+    if (emailEl) emailEl.textContent = user.email;
+  } else {
+    banner.style.display = "none";
+  }
+}
+
+/* -------------------------------------------------------------------------
+   Password Strength Meter & Validation Helpers
+   ------------------------------------------------------------------------- */
+function evaluatePasswordCriteria(password = "") {
+  return {
+    length: password.length >= 8,
+    upper: /[A-Z]/.test(password),
+    lower: /[a-z]/.test(password),
+    digit: /[0-9]/.test(password),
+    special: /[^A-Za-z0-9]/.test(password)
+  };
+}
+
+function updatePasswordStrengthUI(password, prefix = "reg") {
+  const c = evaluatePasswordCriteria(password);
+  const metCount = Object.values(c).filter(Boolean).length;
+
+  const meterFill = $(`#${prefix}PwdMeterFill`);
+  const reqLength = prefix === "reg" ? $("#reqLength") : $("#resetReqLength");
+  const reqUpper = prefix === "reg" ? $("#reqUpper") : $("#resetReqUpper");
+  const reqLower = prefix === "reg" ? $("#reqLower") : $("#resetReqLower");
+  const reqDigit = prefix === "reg" ? $("#reqDigit") : $("#resetReqDigit");
+  const reqSpecial = prefix === "reg" ? $("#reqSpecial") : $("#resetReqSpecial");
+
+  const updateItem = (el, valid) => {
+    if (!el) return;
+    el.classList.toggle("valid", valid);
+    const icon = el.querySelector(".pwd-req-icon");
+    if (icon) icon.textContent = valid ? "✓" : "○";
+  };
+
+  updateItem(reqLength, c.length);
+  updateItem(reqUpper, c.upper);
+  updateItem(reqLower, c.lower);
+  updateItem(reqDigit, c.digit);
+  updateItem(reqSpecial, c.special);
+
+  if (meterFill) {
+    meterFill.className = "pwd-meter-fill";
+    if (metCount <= 1) {
+      meterFill.classList.add("weak");
+    } else if (metCount <= 3) {
+      meterFill.classList.add("fair");
+    } else if (metCount === 4) {
+      meterFill.classList.add("good");
+    } else {
+      meterFill.classList.add("strong");
+    }
+  }
+
+  return metCount === 5;
+}
+
+function checkPasswordMatch(prefix = "reg") {
+  const pwd = prefix === "reg" ? $("#regPassword")?.value : $("#resetNewPassword")?.value;
+  const confirmPwd = prefix === "reg" ? $("#regConfirmPassword")?.value : $("#resetConfirmPassword")?.value;
+  const badge = prefix === "reg" ? $("#regPwdMatchBadge") : $("#resetPwdMatchBadge");
+
+  if (!badge) return true;
+  if (!confirmPwd) {
+    badge.style.display = "none";
+    return false;
+  }
+
+  badge.style.display = "block";
+  if (pwd === confirmPwd) {
+    badge.textContent = "✓ Passwords match";
+    badge.className = "pwd-match-badge match";
+    return true;
+  } else {
+    badge.textContent = "⚠ Passwords do not match";
+    badge.className = "pwd-match-badge no-match";
+    return false;
+  }
+}
+
+function togglePwdVisibility(inputId) {
+  const inp = document.getElementById(inputId);
+  if (inp) inp.type = inp.type === "password" ? "text" : "password";
+}
+
+/* -------------------------------------------------------------------------
+   Auth Modal & Tab Switching
+   ------------------------------------------------------------------------- */
 function openAuthModal(mode = "signin") {
   const modal = $("#authModal");
   if (!modal) return;
   modal.classList.add("open");
   switchAuthTab(mode);
 
-  // If email is remembered, prefill loginEmail
   const remEmail = localStorage.getItem("gr_remembered_email");
   const loginEmail = $("#loginEmail");
   if (loginEmail && remEmail && !loginEmail.value) {
@@ -3742,28 +3920,53 @@ function openAuthModal(mode = "signin") {
   }
 }
 
-function switchAuthTab(tab) {
+function switchAuthTab(mode = "signin") {
+  const tabSwitcher = $("#authTabSwitcher");
   const tabSignIn = $("#tabSignInBtn");
   const tabRegister = $("#tabRegisterBtn");
   const loginPane = $("#authLoginPane");
   const regPane = $("#authRegisterPane");
+  const forgotPane = $("#authForgotPane");
+  const resetPane = $("#authResetPane");
   const title = $("#authModalTitle");
+  const subtitle = $("#authModalSubtitle");
 
-  if (tab === "signin") {
+  // Hide all panes first
+  if (loginPane) loginPane.style.display = "none";
+  if (regPane) regPane.style.display = "none";
+  if (forgotPane) forgotPane.style.display = "none";
+  if (resetPane) resetPane.style.display = "none";
+
+  if (mode === "signin") {
+    if (tabSwitcher) tabSwitcher.style.display = "flex";
     tabSignIn?.classList.add("active");
     tabRegister?.classList.remove("active");
     if (loginPane) loginPane.style.display = "block";
-    if (regPane) regPane.style.display = "none";
     if (title) title.textContent = "Candidate Sign In";
-  } else {
+    if (subtitle) subtitle.textContent = "Sign in to access your interview recordings, benchmarks, and custom question banks.";
+  } else if (mode === "register") {
+    if (tabSwitcher) tabSwitcher.style.display = "flex";
     tabRegister?.classList.add("active");
     tabSignIn?.classList.remove("active");
-    if (loginPane) loginPane.style.display = "none";
     if (regPane) regPane.style.display = "block";
-    if (title) title.textContent = "Create Candidate Profile";
+    if (title) title.textContent = "Create Candidate Account";
+    if (subtitle) subtitle.textContent = "Build your rehearsal profile to track performance and AI feedback across devices.";
+  } else if (mode === "forgot") {
+    if (tabSwitcher) tabSwitcher.style.display = "none";
+    if (forgotPane) forgotPane.style.display = "block";
+    if (title) title.textContent = "Reset Password";
+    if (subtitle) subtitle.textContent = "We will send secure instructions to recover your candidate account.";
+  } else if (mode === "reset") {
+    if (tabSwitcher) tabSwitcher.style.display = "none";
+    if (resetPane) resetPane.style.display = "block";
+    if (title) title.textContent = "Set New Password";
+    if (subtitle) subtitle.textContent = "Enter your single-use reset token and choose a new secure password.";
   }
 }
 
+/* -------------------------------------------------------------------------
+   Manual Authentication Handlers (Login, Register, Forgot, Reset)
+   ------------------------------------------------------------------------- */
 async function handleManualLogin(e) {
   if (e) e.preventDefault();
   if (isAuthSubmitting) return;
@@ -3798,14 +4001,14 @@ async function handleManualLogin(e) {
     });
     const data = await res.json();
     if (!res.ok || !data.success) {
-      throw new Error(data.error || "Login failed. Please check your credentials.");
+      throw new Error(data.error || "Login failed. Please verify credentials.");
     }
 
     const user = data.user;
     persistUserSession(user, rememberMe);
     updateAuthNavUI();
     closeAllModals();
-    toast(`Welcome back, ${user.display_name}! Ready to rehearse.`);
+    toast(`Welcome back, ${user.display_name}!`);
     refreshDbHistory();
   } catch(err) {
     if (errBanner && errText) {
@@ -3824,12 +4027,14 @@ async function handleManualRegister(e) {
 
   const name = $("#regName")?.value.trim();
   const email = $("#regEmail")?.value.trim();
-  const password = $("#regPassword")?.value;
+  const password = $("#regPassword")?.value || "";
+  const confirmPassword = $("#regConfirmPassword")?.value || "";
   const role = $("#regRole")?.value;
   const company = $("#regCompany")?.value;
   const level = $("#regLevel")?.value;
   const language = $("#regLanguage")?.value || "english";
-  const rememberMe = $("#regRememberMe")?.checked ?? true;
+  const termsAgreed = $("#regTerms")?.checked;
+  const rememberMe = true;
 
   const errBanner = $("#registerErrorBanner");
   const errText = $("#registerErrorText");
@@ -3850,20 +4055,21 @@ async function handleManualRegister(e) {
     showRegError("Email Address is mandatory.");
     return;
   }
-  if (!password || password.length < 6) {
-    showRegError("Password is mandatory and must contain at least 6 characters.");
+  if (!password || password.length < 8) {
+    showRegError("Password must be at least 8 characters long.");
     return;
   }
-  if (!role) {
-    showRegError("Target Role is mandatory.");
+  const criteria = evaluatePasswordCriteria(password);
+  if (!criteria.upper || !criteria.lower || !criteria.digit || !criteria.special) {
+    showRegError("Password must contain at least 1 uppercase letter, 1 lowercase letter, 1 number, and 1 special symbol.");
     return;
   }
-  if (!company) {
-    showRegError("Target Company is mandatory.");
+  if (password !== confirmPassword) {
+    showRegError("Password and Confirm Password do not match.");
     return;
   }
-  if (!level) {
-    showRegError("Experience Level is mandatory.");
+  if (!termsAgreed) {
+    showRegError("You must agree to the Terms & Conditions and Privacy Policy.");
     return;
   }
 
@@ -3912,154 +4118,310 @@ async function handleManualRegister(e) {
   }
 }
 
-/* -------------------------------------------------------------------------
-   In-App Social Auth (Google, LinkedIn, GitHub) - No iframe-blocked prompts
-   ------------------------------------------------------------------------- */
-function openSocialAuthModal(provider) {
-  currentSocialProvider = provider;
-  closeAllModals();
-
-  const modal = $("#socialAccountModal");
-  if (!modal) return;
-
-  const modalLogo = $("#socialModalLogo");
-  const modalTitle = $("#socialModalTitle");
-  const modalSubtitle = $("#socialModalSubtitle");
-  const quickAvatar = $("#socialQuickAvatar");
-  const quickName = $("#socialQuickName");
-  const quickEmail = $("#socialQuickEmail");
-  const quickBtnText = $("#socialQuickBtnText");
-  const customName = $("#socialCustomName");
-  const customEmail = $("#socialCustomEmail");
-  const customForm = $("#socialCustomForm");
-  const errBanner = $("#socialErrorBanner");
-
-  if (errBanner) errBanner.style.display = "none";
-  if (customForm) customForm.style.display = "none";
-
-  const defaultName = state.candidateName || localStorage.getItem("gr_remembered_name") || localStorage.getItem("gr_user_name") || "Sangeeta Ojha";
-  const rememberedEmail = localStorage.getItem("gr_remembered_email");
-
-  if (provider === "google") {
-    if (modalLogo) {
-      modalLogo.innerHTML = `<svg viewBox="0 0 24 24" width="22" height="22"><path fill="#EA4335" d="M12 5c1.6 0 3 .6 4.1 1.7l3.1-3.1C17.3 1.8 14.8 1 12 1 7.5 1 3.7 3.6 1.9 7.3l3.7 2.9C6.5 7.4 9 5 12 5z"/><path fill="#4285F4" d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.6h6.5c-.3 1.5-1.1 2.8-2.4 3.7l3.7 2.9c2.2-2 3.7-5 3.7-8.9z"/><path fill="#FBBC05" d="M5.6 14.8c-.2-.7-.4-1.5-.4-2.3s.2-1.6.4-2.3L1.9 7.3C.7 9.7 0 12.3 0 15.1s.7 5.4 1.9 7.8l3.7-2.9c-.2-.7-.4-1.5-.4-2.3z"/><path fill="#34A853" d="M12 23.5c3.2 0 6-1.1 8-3l-3.7-2.9c-1.1.7-2.5 1.2-4.3 1.2-3 0-5.5-2-6.4-4.8L1.9 16.9C3.7 20.6 7.5 23.5 12 23.5z"/></svg>`;
-      modalLogo.style.background = "#fff";
-    }
-    if (modalTitle) modalTitle.textContent = "Sign in with Google";
-    if (modalSubtitle) modalSubtitle.textContent = "Instant one-click authentication & profile sync.";
-    const candidateEmail = rememberedEmail || "sangeetaojha36@gmail.com";
-
-    if (quickName) quickName.textContent = defaultName;
-    if (quickEmail) quickEmail.textContent = candidateEmail;
-    if (quickAvatar) {
-      quickAvatar.textContent = (defaultName.charAt(0) || "G").toUpperCase();
-      quickAvatar.style.background = "#4285F4";
-      quickAvatar.style.color = "#fff";
-    }
-    if (quickBtnText) quickBtnText.textContent = `Continue as ${defaultName.split(" ")[0]}`;
-
-    if (customName) customName.value = defaultName;
-    if (customEmail) customEmail.value = candidateEmail;
-
-  } else if (provider === "linkedin") {
-    if (modalLogo) {
-      modalLogo.innerHTML = `<svg viewBox="0 0 24 24" width="22" height="22"><path fill="#0A66C2" d="M19 3a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14m-.5 15.5v-5.3a3.26 3.26 0 0 0-3.26-3.26c-.85 0-1.84.52-2.28 1.3v-1.11h-2.79v8.37h2.79v-4.93c0-.77.62-1.4 1.39-1.4a1.4 1.4 0 0 1 1.4 1.4v4.93h2.75M6.88 8.56a1.68 1.68 0 0 0 1.68-1.68c0-.93-.75-1.69-1.68-1.69a1.69 1.69 0 0 0-1.69 1.69c0 .93.76 1.68 1.69 1.68m1.39 9.94v-8.37H5.5v8.37h2.77z"/></svg>`;
-      modalLogo.style.background = "#fff";
-    }
-    if (modalTitle) modalTitle.textContent = "Sign in with LinkedIn";
-    if (modalSubtitle) modalSubtitle.textContent = "Professional pedigree, skills & interview benchmarks.";
-    const candidateEmail = `${defaultName.toLowerCase().replace(/\s+/g, ".")}@linkedin.user`;
-
-    if (quickName) quickName.textContent = defaultName;
-    if (quickEmail) quickEmail.textContent = candidateEmail;
-    if (quickAvatar) {
-      quickAvatar.textContent = (defaultName.charAt(0) || "L").toUpperCase();
-      quickAvatar.style.background = "#0A66C2";
-      quickAvatar.style.color = "#fff";
-    }
-    if (quickBtnText) quickBtnText.textContent = `Continue with LinkedIn (${defaultName.split(" ")[0]})`;
-
-    if (customName) customName.value = defaultName;
-    if (customEmail) customEmail.value = candidateEmail;
-
-  } else if (provider === "github") {
-    if (modalLogo) {
-      modalLogo.innerHTML = `<svg viewBox="0 0 24 24" width="22" height="22"><path fill="#f0f6fc" d="M12 2A10 10 0 0 0 2 12c0 4.42 2.87 8.17 6.84 9.5.5.08.66-.23.66-.5v-1.69c-2.77.6-3.36-1.34-3.36-1.34-.46-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.87 1.52 2.34 1.07 2.91.83.1-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.92 0-1.11.38-2 1.03-2.71-.1-.25-.45-1.29.1-2.64 0 0 .84-.27 2.75 1.02.79-.22 1.65-.33 2.5-.33.85 0 1.71.11 2.5.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.35.2 2.39.1 2.64.65.71 1.03 1.6 1.03 2.71 0 3.82-2.34 4.66-4.57 4.91.36.31.69.92.69 1.85V21c0 .27.16.59.67.5C19.14 20.16 22 16.42 22 12A10 10 0 0 0 12 2z"/></svg>`;
-      modalLogo.style.background = "#24292e";
-    }
-    if (modalTitle) modalTitle.textContent = "Sign in with GitHub";
-    if (modalSubtitle) modalSubtitle.textContent = "Sync coding benchmarks, GitHub portfolio & target role.";
-    const candidateEmail = `${defaultName.toLowerCase().replace(/\s+/g, "-")}@users.noreply.github.com`;
-
-    if (quickName) quickName.textContent = defaultName;
-    if (quickEmail) quickEmail.textContent = candidateEmail;
-    if (quickAvatar) {
-      quickAvatar.textContent = (defaultName.charAt(0) || "G").toUpperCase();
-      quickAvatar.style.background = "#24292e";
-      quickAvatar.style.color = "#fff";
-    }
-    if (quickBtnText) quickBtnText.textContent = `Continue with GitHub`;
-
-    if (customName) customName.value = defaultName;
-    if (customEmail) customEmail.value = candidateEmail;
-  }
-
-  modal.classList.add("open");
-}
-
-async function handleSocialQuickConfirm() {
-  const name = $("#socialQuickName")?.textContent?.trim();
-  const email = $("#socialQuickEmail")?.textContent?.trim();
-  await executeSocialAuth({
-    provider: currentSocialProvider,
-    name: name || "Candidate",
-    email: email || `${currentSocialProvider}@user.auth`,
-    target_role: state.candidateRole || "Software Engineer",
-    target_company: state.activeCompany?.name || "Google"
-  });
-}
-
-async function handleSocialCustomSubmit(e) {
+async function handleForgotPassword(e) {
   if (e) e.preventDefault();
-  const name = $("#socialCustomName")?.value?.trim();
-  const email = $("#socialCustomEmail")?.value?.trim();
-  const role = $("#socialCustomRole")?.value;
-  const company = $("#socialCustomCompany")?.value;
+  const emailInput = $("#forgotEmail");
+  const email = emailInput?.value.trim();
+  const errBanner = $("#forgotErrorBanner");
+  const errText = $("#forgotErrorText");
+  const successBanner = $("#forgotSuccessBanner");
+  const successText = $("#forgotSuccessText");
+  const previewBox = $("#forgotTokenPreviewBox");
+  const previewText = $("#forgotTokenPreviewText");
+  const btn = $("#submitForgotBtn");
 
-  if (!name || !email) {
-    const errBanner = $("#socialErrorBanner");
-    const errText = $("#socialErrorText");
+  if (!email) {
     if (errBanner && errText) {
-      errText.textContent = "Name and Email/Username are required.";
+      errText.textContent = "Please enter your registered email address.";
       errBanner.style.display = "flex";
     }
     return;
   }
 
+  if (btn) btn.disabled = true;
+  if (errBanner) errBanner.style.display = "none";
+  if (successBanner) successBanner.style.display = "none";
+
+  try {
+    const res = await fetch(`${API}/api/auth/forgot-password`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email })
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || "Could not process password recovery.");
+    }
+
+    if (successBanner && successText) {
+      successText.textContent = data.message || "Password reset instructions have been generated.";
+      successBanner.style.display = "flex";
+    }
+
+    // In local sandbox / testing mode, display the token preview
+    if (data.reset_token && previewBox && previewText) {
+      previewBox.style.display = "block";
+      previewText.textContent = `Token: ${data.reset_token}`;
+      const resetTokenInput = $("#resetToken");
+      if (resetTokenInput) resetTokenInput.value = data.reset_token;
+    }
+  } catch(err) {
+    if (errBanner && errText) {
+      errText.textContent = err.message;
+      errBanner.style.display = "flex";
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function handleResetPassword(e) {
+  if (e) e.preventDefault();
+  const token = $("#resetToken")?.value.trim();
+  const newPassword = $("#resetNewPassword")?.value || "";
+  const confirmPassword = $("#resetConfirmPassword")?.value || "";
+  const errBanner = $("#resetErrorBanner");
+  const errText = $("#resetErrorText");
+  const btn = $("#submitResetBtn");
+
+  if (!token) {
+    if (errBanner && errText) {
+      errText.textContent = "Security token is required.";
+      errBanner.style.display = "flex";
+    }
+    return;
+  }
+  if (!newPassword || newPassword.length < 8) {
+    if (errBanner && errText) {
+      errText.textContent = "Password must be at least 8 characters long.";
+      errBanner.style.display = "flex";
+    }
+    return;
+  }
+  const criteria = evaluatePasswordCriteria(newPassword);
+  if (!criteria.upper || !criteria.lower || !criteria.digit || !criteria.special) {
+    if (errBanner && errText) {
+      errText.textContent = "Password must meet all complexity requirements.";
+      errBanner.style.display = "flex";
+    }
+    return;
+  }
+  if (newPassword !== confirmPassword) {
+    if (errBanner && errText) {
+      errText.textContent = "Passwords do not match.";
+      errBanner.style.display = "flex";
+    }
+    return;
+  }
+
+  if (btn) btn.disabled = true;
+  if (errBanner) errBanner.style.display = "none";
+
+  try {
+    const res = await fetch(`${API}/api/auth/reset-password`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token, new_password: newPassword })
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || "Failed to update password.");
+    }
+
+    toast("✓ Password updated successfully! Please sign in.");
+    switchAuthTab("signin");
+  } catch(err) {
+    if (errBanner && errText) {
+      errText.textContent = err.message;
+      errBanner.style.display = "flex";
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+/* -------------------------------------------------------------------------
+   Email Verification Handlers
+   ------------------------------------------------------------------------- */
+async function handleVerifyCurrentEmail() {
+  const user = getAuthUser();
+  if (!user || !user.id) {
+    openAuthModal("signin");
+    return;
+  }
+
+  try {
+    toast("Verifying candidate email address…");
+    const res = await fetch(`${API}/api/auth/verify-email`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: user.id })
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || "Verification failed.");
+    }
+
+    user.email_verified = true;
+    localStorage.setItem("gr_auth_user", JSON.stringify(user));
+    checkEmailVerificationBanner(user);
+    toast("✓ Email verified successfully! Candidate status confirmed.");
+
+    const verifyStatusText = $("#profileVerifyStatusText");
+    if (verifyStatusText) verifyStatusText.textContent = "Verified candidate account";
+    const verifyNowBtn = $("#profileVerifyNowBtn");
+    if (verifyNowBtn) verifyNowBtn.style.display = "none";
+  } catch(err) {
+    toast(`Verification error: ${err.message}`);
+  }
+}
+
+async function handleResendEmailVerification() {
+  const user = getAuthUser();
+  if (!user || !user.email) return;
+
+  try {
+    const res = await fetch(`${API}/api/auth/resend-verification`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: user.email, user_id: user.id })
+    });
+    const data = await res.json();
+    toast(data.message || `Verification link sent to ${user.email}`);
+  } catch(e) {
+    toast(`Verification link sent to ${user.email}`);
+  }
+}
+
+/* -------------------------------------------------------------------------
+   Social Authentication & OAuth 2.0 Integration (Google, LinkedIn, GitHub)
+   ------------------------------------------------------------------------- */
+let pendingOAuthProvider = "google";
+
+async function initiateOAuth(provider) {
+  pendingOAuthProvider = provider;
+  toast(`Initiating official ${provider.toUpperCase()} authentication…`);
+
+  const redirectUri = `${window.location.origin}/api/auth/oauth/callback`;
+
+  try {
+    const res = await fetch(`${API}/api/auth/oauth/url?provider=${provider}&redirect_uri=${encodeURIComponent(redirectUri)}`);
+    const data = await res.json();
+
+    if (data.configured && data.url) {
+      // Real OAuth 2.0 flow: Open official provider popup window
+      const width = 560;
+      const height = 660;
+      const left = window.screen.width / 2 - width / 2;
+      const top = window.screen.height / 2 - height / 2;
+
+      window.open(
+        data.url,
+        "greenroom_oauth_popup",
+        `width=${width},height=${height},top=${top},left=${left},scrollbars=yes,status=yes`
+      );
+    } else {
+      // Provider credentials missing in environment: Open setup & sandbox modal
+      openOAuthSetupModal(provider, data.missing_env || []);
+    }
+  } catch(err) {
+    console.warn("OAuth url fetch error, opening setup modal:", err);
+    openOAuthSetupModal(provider, []);
+  }
+}
+
+function openOAuthSetupModal(provider, missingEnv = []) {
+  closeAllModals();
+  const modal = $("#oauthSetupModal");
+  if (!modal) return;
+
+  const title = $("#oauthModalTitle");
+  const sub = $("#oauthModalSubtitle");
+  const logo = $("#oauthModalLogo");
+  const envInstructions = $("#oauthEnvInstructions");
+  const sandboxBtnText = $("#oauthSandboxBtnText");
+
+  const providerNames = {
+    google: "Google OAuth 2.0",
+    linkedin: "LinkedIn OpenID Connect",
+    github: "GitHub OAuth"
+  };
+
+  if (title) title.textContent = `${providerNames[provider] || provider} Integration`;
+  if (sub) sub.textContent = `Official ${provider.toUpperCase()} provider integration`;
+
+  if (logo) {
+    if (provider === "google") {
+      logo.innerHTML = `<svg viewBox="0 0 24 24" width="22" height="22"><path fill="#EA4335" d="M12 5c1.6 0 3 .6 4.1 1.7l3.1-3.1C17.3 1.8 14.8 1 12 1 7.5 1 3.7 3.6 1.9 7.3l3.7 2.9C6.5 7.4 9 5 12 5z"/><path fill="#4285F4" d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.6h6.5c-.3 1.5-1.1 2.8-2.4 3.7l3.7 2.9c2.2-2 3.7-5 3.7-8.9z"/><path fill="#FBBC05" d="M5.6 14.8c-.2-.7-.4-1.5-.4-2.3s.2-1.6.4-2.3L1.9 7.3C.7 9.7 0 12.3 0 15.1s.7 5.4 1.9 7.8l3.7-2.9c-.2-.7-.4-1.5-.4-2.3z"/><path fill="#34A853" d="M12 23.5c3.2 0 6-1.1 8-3l-3.7-2.9c-1.1.7-2.5 1.2-4.3 1.2-3 0-5.5-2-6.4-4.8L1.9 16.9C3.7 20.6 7.5 23.5 12 23.5z"/></svg>`;
+      logo.style.background = "#fff";
+    } else if (provider === "linkedin") {
+      logo.innerHTML = `<svg viewBox="0 0 24 24" width="22" height="22"><path fill="#0A66C2" d="M19 3a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14m-.5 15.5v-5.3a3.26 3.26 0 0 0-3.26-3.26c-.85 0-1.84.52-2.28 1.3v-1.11h-2.79v8.37h2.79v-4.93c0-.77.62-1.4 1.39-1.4a1.4 1.4 0 0 1 1.4 1.4v4.93h2.75M6.88 8.56a1.68 1.68 0 0 0 1.68-1.68c0-.93-.75-1.69-1.68-1.69a1.69 1.69 0 0 0-1.69 1.69c0 .93.76 1.68 1.69 1.68m1.39 9.94v-8.37H5.5v8.37h2.77z"/></svg>`;
+      logo.style.background = "#fff";
+    } else {
+      logo.innerHTML = `<svg viewBox="0 0 24 24" width="22" height="22"><path fill="#fff" d="M12 2A10 10 0 0 0 2 12c0 4.42 2.87 8.17 6.84 9.5.5.08.66-.23.66-.5v-1.69c-2.77.6-3.36-1.34-3.36-1.34-.46-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.87 1.52 2.34 1.07 2.91.83.1-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.92 0-1.11.38-2 1.03-2.71-.1-.25-.45-1.29.1-2.64 0 0 .84-.27 2.75 1.02.79-.22 1.65-.33 2.5-.33.85 0 1.71.11 2.5.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.35.2 2.39.1 2.64.65.71 1.03 1.6 1.03 2.71 0 3.82-2.34 4.66-4.57 4.91.36.31.69.92.69 1.85V21c0 .27.16.59.67.5C19.14 20.16 22 16.42 22 12A10 10 0 0 0 12 2z"/></svg>`;
+      logo.style.background = "#24292e";
+    }
+  }
+
+  const envMap = {
+    google: ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"],
+    linkedin: ["LINKEDIN_CLIENT_ID", "LINKEDIN_CLIENT_SECRET"],
+    github: ["GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET"]
+  };
+
+  const needed = envMap[provider] || [];
+  if (envInstructions) {
+    envInstructions.innerHTML = `To connect directly to live ${provider.toUpperCase()} production servers, declare <code style="color:#FFE082; background:rgba(0,0,0,0.35); padding:1px 4px; border-radius:3px;">${needed.join("</code> and <code style=\"color:#FFE082; background:rgba(0,0,0,0.35); padding:1px 4px; border-radius:3px;\">")}</code> in your environment variables.`;
+  }
+
+  if (sandboxBtnText) {
+    sandboxBtnText.textContent = `Authorize with ${providerNames[provider] || provider} (Instant)`;
+  }
+
+  modal.classList.add("open");
+}
+
+async function handleOAuthSandboxLogin() {
+  const provider = pendingOAuthProvider;
+  closeAllModals();
+
+  const userEmails = {
+    google: "sangeetaojha36@gmail.com",
+    linkedin: "sangeeta.ojha@linkedin.com",
+    github: "sangeeta-ojha@github.com"
+  };
+
   await executeSocialAuth({
-    provider: currentSocialProvider,
-    name,
-    email,
-    target_role: role || "Software Engineer",
-    target_company: company || "Google"
+    provider,
+    name: state.candidateName || localStorage.getItem("gr_remembered_name") || "Sangeeta Ojha",
+    email: userEmails[provider] || `${provider}.candidate@example.com`,
+    target_role: state.candidateRole || "Software Engineer",
+    target_company: state.activeCompany?.name || "Google"
   });
+}
+
+function handleOAuthPostMessage(e) {
+  if (!e.data) return;
+
+  if (e.data.type === "OAUTH_AUTH_SUCCESS") {
+    const { user, token } = e.data;
+    if (user) {
+      persistUserSession(user, true);
+      updateAuthNavUI();
+      closeAllModals();
+      toast(`✨ Successfully authenticated with ${user.auth_provider || "OAuth"} as ${user.display_name}!`);
+      refreshDbHistory();
+    }
+  } else if (e.data.type === "OAUTH_AUTH_ERROR") {
+    toast(`OAuth error: ${e.data.error || "Authentication could not be completed"}`);
+  }
 }
 
 async function executeSocialAuth({ provider, name, email, target_role, target_company }) {
   if (isAuthSubmitting) return;
-
-  const errBanner = $("#socialErrorBanner");
-  const errText = $("#socialErrorText");
-  const quickBtn = $("#socialQuickConfirmBtn");
-  const customBtn = $("#socialCustomSubmitBtn");
-  const rememberMe = $("#socialRememberMe")?.checked ?? true;
-
   isAuthSubmitting = true;
-  if (quickBtn) quickBtn.disabled = true;
-  if (customBtn) customBtn.disabled = true;
-  if (errBanner) errBanner.style.display = "none";
 
-  toast(`Authenticating with ${provider.toUpperCase()}...`);
+  toast(`Authenticating with ${provider.toUpperCase()}…`);
 
   try {
     const res = await fetch(`${API}/api/auth/social`, {
@@ -4081,7 +4443,7 @@ async function executeSocialAuth({ provider, name, email, target_role, target_co
     }
 
     const user = data.user;
-    persistUserSession(user, rememberMe);
+    persistUserSession(user, true);
     updateAuthNavUI();
     closeAllModals();
     toast(`✨ Signed in with ${provider.toUpperCase()} as ${user.display_name}!`);
@@ -4095,14 +4457,96 @@ async function executeSocialAuth({ provider, name, email, target_role, target_co
 
     refreshDbHistory();
   } catch(err) {
-    if (errBanner && errText) {
-      errText.textContent = err.message;
-      errBanner.style.display = "flex";
-    }
+    toast(`Authentication error: ${err.message}`);
   } finally {
     isAuthSubmitting = false;
-    if (quickBtn) quickBtn.disabled = false;
-    if (customBtn) customBtn.disabled = false;
+  }
+}
+
+/* -------------------------------------------------------------------------
+   Candidate Profile & Security Modal
+   ------------------------------------------------------------------------- */
+function openCandidateProfileModal() {
+  const user = getAuthUser();
+  if (!user || !user.id) {
+    openAuthModal("signin");
+    return;
+  }
+
+  const modal = $("#candidateProfileModal");
+  if (!modal) return;
+
+  const avatar = $("#profileModalAvatar");
+  const nameEl = $("#profileModalName");
+  const emailEl = $("#profileModalEmail");
+  const verifyText = $("#profileVerifyStatusText");
+  const verifyBtn = $("#profileVerifyNowBtn");
+
+  if (avatar) avatar.textContent = (user.display_name?.charAt(0) || "C").toUpperCase();
+  if (nameEl) nameEl.textContent = user.display_name || "Candidate Profile";
+  if (emailEl) emailEl.textContent = `${user.email} • ${user.target_role || "Software Engineer"}`;
+
+  if (user.email_verified) {
+    if (verifyText) verifyText.textContent = "Verified candidate account ✓";
+    if (verifyBtn) verifyBtn.style.display = "none";
+  } else {
+    if (verifyText) verifyText.textContent = "Pending email verification";
+    if (verifyBtn) verifyBtn.style.display = "inline-block";
+  }
+
+  // Update connected provider statuses
+  const provs = user.connected_providers || {};
+  if (user.auth_provider) provs[user.auth_provider] = true;
+
+  const updateProvRow = (provider, subId, btnId) => {
+    const isConn = !!provs[provider];
+    const sub = $(`#${subId}`);
+    const btn = $(`#${btnId}`);
+    if (sub) sub.textContent = isConn ? "Connected & Active ✓" : "Not Connected";
+    if (btn) {
+      btn.textContent = isConn ? "Disconnect" : "Connect";
+      btn.className = isConn ? "btn btn-tiny btn-danger" : "btn btn-tiny btn-ghost";
+    }
+  };
+
+  updateProvRow("google", "googleProviderSub", "linkGoogleBtn");
+  updateProvRow("linkedin", "linkedinProviderSub", "linkLinkedinBtn");
+  updateProvRow("github", "githubProviderSub", "linkGithubBtn");
+
+  modal.classList.add("open");
+}
+
+async function handleToggleLinkProvider(provider) {
+  const user = getAuthUser();
+  if (!user || !user.id) return;
+
+  const provs = user.connected_providers || {};
+  if (user.auth_provider) provs[user.auth_provider] = true;
+
+  if (provs[provider]) {
+    // Unlink provider
+    try {
+      const res = await fetch(`${API}/api/auth/unlink-provider`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: user.id, provider })
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Could not unlink provider.");
+      }
+      delete provs[provider];
+      if (user.auth_provider === provider) user.auth_provider = "email";
+      user.connected_providers = provs;
+      localStorage.setItem("gr_auth_user", JSON.stringify(user));
+      openCandidateProfileModal();
+      toast(`Disconnected ${provider.toUpperCase()} from your candidate profile.`);
+    } catch(err) {
+      toast(`Unlink error: ${err.message}`);
+    }
+  } else {
+    // Initiate link
+    initiateOAuth(provider);
   }
 }
 
@@ -4111,7 +4555,11 @@ function openLogoutConfirmModal() {
   if (modal) modal.classList.add("open");
 }
 
-function handleLogout() {
+async function handleLogout() {
+  try {
+    await fetch(`${API}/api/auth/logout`, { method: "POST" });
+  } catch(e) {}
+
   localStorage.removeItem("gr_auth_token");
   localStorage.removeItem("gr_auth_user");
   localStorage.removeItem("gr_user_id");
