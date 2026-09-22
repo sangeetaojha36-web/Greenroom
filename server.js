@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import path from "path";
 import fs from "fs";
+import cookieParser from "cookie-parser";
 import { fileURLToPath } from "url";
 import { execFile } from "child_process";
 import { promisify } from "util";
@@ -9,6 +10,7 @@ import { createRequire } from "module";
 import { GoogleGenAI } from "@google/genai";
 import * as aiEngine from "./aiEngine.js";
 import * as dbService from "./dbService.js";
+import * as authService from "./authService.js";
 import embeddedQuestionBank from "./data/question_bank_data.js";
 
 const require = createRequire(import.meta.url);
@@ -76,8 +78,32 @@ const PORT = 3000;
 const FRONTEND_DIR = getFrontendDir();
 
 app.use(cors());
+app.use(cookieParser());
 app.use(express.json({ limit: "25mb" }));
 app.use(express.urlencoded({ extended: true, limit: "25mb" }));
+
+// Session & Authentication extraction middleware
+app.use(async (req, res, next) => {
+  try {
+    const token = req.cookies?.gr_session_token ||
+      (req.headers.authorization && req.headers.authorization.startsWith("Bearer ") ? req.headers.authorization.slice(7) : null) ||
+      req.headers["x-auth-token"];
+
+    if (token) {
+      const sessionCheck = await authService.validateSession(token);
+      if (sessionCheck.valid && sessionCheck.userId) {
+        req.userId = sessionCheck.userId;
+        req.sessionToken = token;
+        req.sessionData = sessionCheck.session;
+        const user = await dbService.getUserProfile(sessionCheck.userId);
+        req.user = user;
+      }
+    }
+  } catch (err) {
+    console.warn("Session middleware check non-blocking warning:", err.message);
+  }
+  next();
+});
 
 // API route normalizer: handles serverless environments (Vercel, AWS Lambda, Cloud Run, etc.)
 app.use((req, res, next) => {
@@ -1414,41 +1440,470 @@ app.get("/api/db/question/:id", async (req, res) => {
 });
 
 /* ---------------------------------------------------------------------------
-   Authentication Endpoints (Manual + Google + LinkedIn + GitHub)
+   Authentication Suite (OAuth 2.0, Passwords, Sessions, Rate Limiting, Reset)
    --------------------------------------------------------------------------- */
+
+function getRedirectUri(req) {
+  if (req.query && req.query.redirect_uri) {
+    return req.query.redirect_uri;
+  }
+  const proto = req.headers["x-forwarded-proto"] || req.protocol || "http";
+  const host = req.headers["x-forwarded-host"] || req.headers.host || "localhost:3000";
+  return `${proto}://${host}/auth/callback`;
+}
+
+// 1. Password Requirements & Policy Info
+app.get("/api/auth/password-requirements", (req, res) => {
+  res.json({
+    minLength: 8,
+    requireUppercase: true,
+    requireLowercase: true,
+    requireDigit: true,
+    requireSpecialChar: true,
+    description: "At least 8 characters with uppercase, lowercase, number, and special character."
+  });
+});
+
+// 2. Candidate Registration (Email + Salted Scrypt Hash + Complexity)
 app.post("/api/auth/register", async (req, res) => {
   try {
-    const { name, email, password, target_role, target_company, experience_level, language } = req.body || {};
-    const user = await dbService.registerUser({
+    const {
       name,
       email,
       password,
+      confirm_password,
+      terms_accepted,
       target_role,
       target_company,
       experience_level,
-      language
+      language,
+      remember_me
+    } = req.body || {};
+
+    if (!name || !name.trim()) {
+      return res.status(400).json({ success: false, error: "Full Name is required." });
+    }
+    if (!email || !email.trim()) {
+      return res.status(400).json({ success: false, error: "Email Address is required." });
+    }
+    if (!password) {
+      return res.status(400).json({ success: false, error: "Password is required." });
+    }
+    if (confirm_password && password !== confirm_password) {
+      return res.status(400).json({ success: false, error: "Password confirmation does not match." });
+    }
+
+    const strength = authService.validatePasswordStrength(password);
+    if (!strength.isValid) {
+      return res.status(400).json({
+        success: false,
+        error: strength.errors[0] || "Password does not meet complexity requirements.",
+        details: strength.errors
+      });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    const existing = await dbService.findUserByEmail(cleanEmail);
+    if (existing) {
+      return res.status(409).json({
+        success: false,
+        error: "An account with this email address already exists. Please sign in or use password reset."
+      });
+    }
+
+    // Salted cryptographically secure hash
+    const { hash, salt } = authService.hashPassword(password);
+    const userId = `usr_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
+    const nowIso = new Date().toISOString();
+
+    const newUser = {
+      id: userId,
+      email: cleanEmail,
+      display_name: name.trim(),
+      password_hash: hash,
+      password_salt: salt,
+      target_role: (target_role || "Software Engineer").trim(),
+      target_company: (target_company || "Google").trim(),
+      target_level: (experience_level || "mid").trim(),
+      preferred_language: language || "english",
+      email_verified: false,
+      account_status: "active",
+      auth_providers: [
+        {
+          provider: "email",
+          email: cleanEmail,
+          linked_at: nowIso
+        }
+      ],
+      total_interviews: 0,
+      avg_score: 0,
+      achievements: ["Candidate Profile Registered", "First Step"],
+      weak_spots: [],
+      created_at: nowIso,
+      updated_at: nowIso,
+      last_login_at: nowIso
+    };
+
+    await dbService.firestoreSetDoc("users", userId, newUser);
+
+    // Generate email verification token
+    const verifData = await authService.createEmailVerificationToken(userId);
+
+    // Create session and set cookie
+    const sessionRes = await authService.createSession(userId, req, Boolean(remember_me));
+    res.cookie("gr_session_token", sessionRes.sessionToken, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "none",
+      maxAge: sessionRes.ttlMs,
+      path: "/"
     });
-    res.json({ success: true, user });
+
+    res.status(201).json({
+      success: true,
+      user: authService.sanitizeUser(newUser),
+      token: sessionRes.sessionToken,
+      verificationToken: verifData.rawToken,
+      message: "Registration successful! Welcome to GreenRoom."
+    });
+  } catch (err) {
+    console.error("Registration error:", err);
+    res.status(400).json({ success: false, error: err.message || "Registration failed." });
+  }
+});
+
+// 3. Candidate Login (Rate Limited + Generic Error Prevention)
+app.post("/api/auth/login", async (req, res) => {
+  const ip = req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "127.0.0.1";
+  const { email, password, remember_me } = req.body || {};
+
+  try {
+    if (!email || !email.trim()) {
+      return res.status(400).json({ success: false, error: "Please provide your email address." });
+    }
+    if (!password) {
+      return res.status(400).json({ success: false, error: "Please provide your password." });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+
+    // Check brute-force rate limit
+    const rateCheck = authService.checkRateLimit(ip, cleanEmail);
+    if (rateCheck.isBlocked) {
+      return res.status(429).json({ success: false, error: rateCheck.message });
+    }
+
+    const user = await dbService.findUserByEmail(cleanEmail);
+
+    // Generic error to prevent account enumeration
+    const genericAuthError = "Invalid email address or password. Please check your credentials.";
+
+    if (!user || !user.password_hash) {
+      authService.recordAuthAttempt(ip, cleanEmail, false);
+      return res.status(401).json({ success: false, error: genericAuthError });
+    }
+
+    const isValid = authService.verifyPassword(password, user.password_hash, user.password_salt);
+    if (!isValid) {
+      authService.recordAuthAttempt(ip, cleanEmail, false);
+      return res.status(401).json({ success: false, error: genericAuthError });
+    }
+
+    // Success: clear rate limit counter
+    authService.recordAuthAttempt(ip, cleanEmail, true);
+
+    const nowIso = new Date().toISOString();
+    const updatedUser = {
+      ...user,
+      last_login_at: nowIso,
+      updated_at: nowIso
+    };
+    await dbService.firestoreSetDoc("users", user.id, updatedUser);
+
+    // Create session & set HttpOnly cookie
+    const sessionRes = await authService.createSession(user.id, req, Boolean(remember_me));
+    res.cookie("gr_session_token", sessionRes.sessionToken, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "none",
+      maxAge: sessionRes.ttlMs,
+      path: "/"
+    });
+
+    res.json({
+      success: true,
+      user: authService.sanitizeUser(updatedUser),
+      token: sessionRes.sessionToken,
+      message: `Welcome back, ${user.display_name}!`
+    });
+  } catch (err) {
+    console.error("Login error:", err);
+    res.status(500).json({ success: false, error: "An unexpected error occurred during sign in." });
+  }
+});
+
+// 4. Candidate Logout (Invalidates Session & Clears Cookie)
+app.post("/api/auth/logout", async (req, res) => {
+  try {
+    const token = req.cookies?.gr_session_token ||
+      (req.headers.authorization && req.headers.authorization.startsWith("Bearer ") ? req.headers.authorization.slice(7) : null) ||
+      req.body?.token;
+
+    if (token) {
+      await authService.destroySession(token);
+    }
+
+    res.clearCookie("gr_session_token", {
+      httpOnly: true,
+      secure: true,
+      sameSite: "none",
+      path: "/"
+    });
+
+    res.json({ success: true, message: "Logged out successfully." });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 5. Active Profile Status
+app.get("/api/auth/me", async (req, res) => {
+  try {
+    let user = req.user;
+
+    // Fallback check by user_id query if provided
+    if (!user && req.query.user_id) {
+      user = await dbService.getUserProfile(req.query.user_id);
+    }
+
+    if (!user) {
+      return res.json({
+        success: true,
+        authenticated: false,
+        user: null
+      });
+    }
+
+    res.json({
+      success: true,
+      authenticated: true,
+      user: authService.sanitizeUser(user)
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 6. Forgot Password Request (Single-Use Token with 1-Hour Expiry)
+app.post("/api/auth/forgot-password", async (req, res) => {
+  try {
+    const { email } = req.body || {};
+    if (!email || !email.trim()) {
+      return res.status(400).json({ success: false, error: "Please provide your account email address." });
+    }
+
+    const result = await authService.createPasswordResetToken(email.trim());
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 7. Reset Password with Single-Use Token
+app.post("/api/auth/reset-password", async (req, res) => {
+  try {
+    const { token, new_password, confirm_password } = req.body || {};
+    if (!token) {
+      return res.status(400).json({ success: false, error: "Reset token is required." });
+    }
+    if (!new_password) {
+      return res.status(400).json({ success: false, error: "New password is required." });
+    }
+    if (confirm_password && new_password !== confirm_password) {
+      return res.status(400).json({ success: false, error: "Passwords do not match." });
+    }
+
+    const result = await authService.resetPasswordWithToken(token, new_password);
+    res.json(result);
   } catch (err) {
     res.status(400).json({ success: false, error: err.message });
   }
 });
 
-app.post("/api/auth/login", async (req, res) => {
+// 8. Email Verification
+app.get("/api/auth/verify-email", async (req, res) => {
   try {
-    const { email, password } = req.body || {};
-    const user = await dbService.authenticateUser(email, password);
-    res.json({ success: true, user });
+    const token = req.query.token;
+    if (!token) {
+      return res.status(400).send("Verification token is required.");
+    }
+
+    const result = await authService.verifyEmailWithToken(token);
+
+    // If browser requesting HTML view:
+    if (req.accepts("html")) {
+      return res.send(`
+        <!DOCTYPE html>
+        <html>
+          <head><title>GreenRoom Email Verification</title></head>
+          <body style="font-family:sans-serif; text-align:center; padding:60px 20px; background:#0A0B0F; color:#EDEEF3;">
+            <div style="max-width:440px; margin:0 auto; background:#16171F; border:1px solid rgba(255,255,255,0.1); border-radius:14px; padding:32px;">
+              <h2 style="color:#59D9C4; margin-top:0;">✓ Email Verified!</h2>
+              <p style="color:#8B8D9B; line-height:1.5;">Your candidate profile has been activated with full access to GreenRoom AI interview simulations.</p>
+              <a href="/" style="display:inline-block; margin-top:18px; padding:10px 24px; background:#FFB020; color:#0A0B0F; font-weight:700; text-decoration:none; border-radius:8px;">Start Interview Rehearsal</a>
+            </div>
+          </body>
+        </html>
+      `);
+    }
+
+    res.json(result);
   } catch (err) {
-    res.status(401).json({ success: false, error: err.message });
+    res.status(400).json({ success: false, error: err.message });
   }
 });
 
-app.post("/api/auth/social", async (req, res) => {
+app.post("/api/auth/resend-verification", async (req, res) => {
   try {
-    const { provider, email, name, avatar, provider_id, target_role, target_company, experience_level } = req.body || {};
-    const user = await dbService.socialAuthUser({
-      provider: provider || "google",
+    const email = req.body?.email || req.user?.email;
+    if (!email) {
+      return res.status(400).json({ success: false, error: "Email is required." });
+    }
+    const user = await dbService.findUserByEmail(email.trim().toLowerCase());
+    if (!user) {
+      return res.json({ success: true, message: "If an account exists, a new verification link was generated." });
+    }
+
+    const verif = await authService.createEmailVerificationToken(user.id);
+    res.json({
+      success: true,
+      message: "Verification link generated.",
+      rawToken: verif.rawToken
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 9. Social OAuth: Generate Authorization URL
+app.get("/api/auth/oauth/url", (req, res) => {
+  try {
+    const provider = req.query.provider;
+    if (!provider) {
+      return res.status(400).json({ error: "Provider query parameter is required (google, github, linkedin)." });
+    }
+
+    const redirectUri = getRedirectUri(req);
+    const authUrlData = authService.generateOAuthAuthorizeUrl(provider, redirectUri);
+    res.json(authUrlData);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// 10. Social OAuth: Universal Callback Handler (Popup + Direct Redirect)
+const callbackHandler = async (req, res) => {
+  const code = req.query.code;
+  const state = req.query.state;
+  const error = req.query.error || req.query.error_description;
+  const provider = req.params.provider || req.query.provider || "google";
+  const redirectUri = getRedirectUri(req);
+
+  if (error) {
+    return res.send(`
+      <!DOCTYPE html>
+      <html>
+        <head><title>Authentication Cancelled</title></head>
+        <body style="font-family:sans-serif; text-align:center; padding:50px; background:#0A0B0F; color:#EDEEF3;">
+          <h3 style="color:#FF4D5E;">OAuth Cancelled</h3>
+          <p style="color:#8B8D9B;">${error}</p>
+          <script>
+            if (window.opener) {
+              window.opener.postMessage({ type: 'OAUTH_AUTH_ERROR', error: ${JSON.stringify(error)} }, '*');
+              setTimeout(() => window.close(), 1500);
+            } else {
+              window.location.href = '/';
+            }
+          </script>
+        </body>
+      </html>
+    `);
+  }
+
+  if (!code) {
+    return res.status(400).send("No authorization code returned from provider.");
+  }
+
+  try {
+    const user = await authService.exchangeOAuthCode(provider, code, state, redirectUri);
+    const sessionRes = await authService.createSession(user.id, req, true);
+
+    res.cookie("gr_session_token", sessionRes.sessionToken, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "none",
+      maxAge: sessionRes.ttlMs,
+      path: "/"
+    });
+
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+        <head><title>Authentication Successful</title></head>
+        <body style="font-family:sans-serif; text-align:center; padding:50px; background:#0A0B0F; color:#EDEEF3;">
+          <h3 style="color:#59D9C4;">✓ Authentication Successful!</h3>
+          <p style="color:#8B8D9B;">Connecting candidate profile ${user.display_name}...</p>
+          <script>
+            try {
+              const payload = {
+                type: 'OAUTH_AUTH_SUCCESS',
+                provider: ${JSON.stringify(provider)},
+                user: ${JSON.stringify(user)},
+                token: ${JSON.stringify(sessionRes.sessionToken)}
+              };
+              if (window.opener) {
+                window.opener.postMessage(payload, '*');
+                setTimeout(() => window.close(), 500);
+              } else {
+                window.location.href = '/';
+              }
+            } catch (e) {
+              window.location.href = '/';
+            }
+          </script>
+        </body>
+      </html>
+    `);
+  } catch (err) {
+    console.error(`OAuth callback error for ${provider}:`, err);
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+        <head><title>Authentication Error</title></head>
+        <body style="font-family:sans-serif; text-align:center; padding:50px; background:#0A0B0F; color:#EDEEF3;">
+          <h3 style="color:#FF4D5E;">Authentication Failed</h3>
+          <p style="color:#8B8D9B;">${err.message}</p>
+          <script>
+            if (window.opener) {
+              window.opener.postMessage({ type: 'OAUTH_AUTH_ERROR', error: ${JSON.stringify(err.message)} }, '*');
+              setTimeout(() => window.close(), 2000);
+            } else {
+              setTimeout(() => { window.location.href = '/'; }, 2500);
+            }
+          </script>
+        </body>
+      </html>
+    `);
+  }
+};
+
+app.get(["/api/auth/oauth/callback", "/api/auth/oauth/callback/:provider", "/auth/callback", "/auth/callback/:provider"], callbackHandler);
+
+// 11. Social OAuth: Developer Sandbox & Preview Mode
+app.post("/api/auth/oauth/sandbox-login", async (req, res) => {
+  try {
+    const {
+      provider,
       email,
       name,
       avatar,
@@ -1456,23 +1911,94 @@ app.post("/api/auth/social", async (req, res) => {
       target_role,
       target_company,
       experience_level
+    } = req.body || {};
+
+    const user = await authService.linkOrRegisterOAuthUser({
+      provider: provider || "google",
+      providerUserId: provider_id || `sbx_${Date.now()}`,
+      email: email || `candidate_${provider || "google"}@greenroom.dev`,
+      name: name || "Candidate",
+      avatar: avatar || "",
+      target_role,
+      target_company,
+      experience_level
     });
-    res.json({ success: true, user });
+
+    const sessionRes = await authService.createSession(user.id, req, true);
+
+    res.cookie("gr_session_token", sessionRes.sessionToken, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "none",
+      maxAge: sessionRes.ttlMs,
+      path: "/"
+    });
+
+    res.json({
+      success: true,
+      user,
+      token: sessionRes.sessionToken,
+      message: `Signed in via ${provider.toUpperCase()}`
+    });
   } catch (err) {
     res.status(400).json({ success: false, error: err.message });
   }
 });
 
-app.get("/api/auth/me", async (req, res) => {
+// Backward-compatible social endpoint
+app.post("/api/auth/social", async (req, res) => {
   try {
-    const userId = req.query.user_id;
-    if (!userId) {
-      return res.status(400).json({ error: "user_id is required" });
-    }
-    const user = await dbService.getUserProfile(userId);
-    res.json({ success: true, user });
+    const { provider, email, name, avatar, provider_id, target_role, target_company, experience_level } = req.body || {};
+    const user = await authService.linkOrRegisterOAuthUser({
+      provider: provider || "google",
+      providerUserId: provider_id || `legacy_${Date.now()}`,
+      email: email || `candidate_${Date.now()}@social.user`,
+      name: name || "Candidate",
+      avatar: avatar || "",
+      target_role,
+      target_company,
+      experience_level
+    });
+
+    const sessionRes = await authService.createSession(user.id, req, true);
+    res.cookie("gr_session_token", sessionRes.sessionToken, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "none",
+      maxAge: sessionRes.ttlMs,
+      path: "/"
+    });
+
+    res.json({ success: true, user, token: sessionRes.sessionToken });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// 12. Account Linking: Connected Providers & Unlink
+app.get("/api/auth/providers", async (req, res) => {
+  if (!req.userId) {
+    return res.status(401).json({ success: false, error: "Authentication required." });
+  }
+  const user = await dbService.getUserProfile(req.userId);
+  res.json({
+    success: true,
+    connected_providers: user.auth_providers || [],
+    has_password: Boolean(user.password_hash)
+  });
+});
+
+app.post("/api/auth/unlink-provider", async (req, res) => {
+  if (!req.userId) {
+    return res.status(401).json({ success: false, error: "Authentication required." });
+  }
+  try {
+    const { provider } = req.body || {};
+    if (!provider) return res.status(400).json({ error: "Provider is required." });
+    const updatedUser = await authService.unlinkOAuthProvider(req.userId, provider);
+    res.json({ success: true, user: updatedUser });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
   }
 });
 
@@ -1535,7 +2061,9 @@ const isMain = process.argv[1] && fileURLToPath(import.meta.url) === path.resolv
 
 if (isMain && !isServerless) {
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`GreenRoom server running on http://0.0.0.0:${PORT}`);
+    console.log(`GreenRoom server running on http://localhost:${PORT}`);
+    console.log(`  > Local:   http://localhost:${PORT}`);
+    console.log(`  > Network: http://127.0.0.1:${PORT}`);
   });
 }
 

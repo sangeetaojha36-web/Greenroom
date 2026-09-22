@@ -20,6 +20,12 @@
       "fields": {
         "email": { "type": "string", "required": true },
         "display_name": { "type": "string", "required": false },
+        "password_hash": { "type": "string", "required": false },
+        "password_salt": { "type": "string", "required": false },
+        "email_verified": { "type": "boolean", "required": false },
+        "account_status": { "type": "string", "required": false },
+        "auth_providers": { "type": "array", "required": false },
+        "last_login_at": { "type": "string", "required": false },
         "target_role": { "type": "string", "required": false },
         "target_level": { "type": "string", "required": false },
         "skills": { "type": "array", "required": false },
@@ -29,6 +35,17 @@
         "avg_score": { "type": "number", "required": true },
         "created_at": { "type": "string", "required": true },
         "updated_at": { "type": "string", "required": true }
+      }
+    },
+    "Session": {
+      "collection": "sessions",
+      "fields": {
+        "user_id": { "type": "string", "required": true },
+        "created_at": { "type": "string", "required": true },
+        "expires_at": { "type": "string", "required": true },
+        "user_agent": { "type": "string", "required": false },
+        "ip_address": { "type": "string", "required": false },
+        "valid": { "type": "boolean", "required": true }
       }
     },
     "Interview": {
