@@ -78,7 +78,42 @@ const app = express();
 const PORT = 3000;
 const FRONTEND_DIR = getFrontendDir();
 
-app.use(cors());
+// Normalize URL for Vercel Serverless Functions and rewrites
+app.use((req, res, next) => {
+  try {
+    const rawUrl = req.url || "/";
+    const parsed = new URL(rawUrl, "http://localhost");
+    const queryPath = parsed.searchParams.get("path");
+    const matchedPath = req.headers["x-matched-path"] || req.headers["x-vercel-matched-path"];
+
+    if (queryPath && queryPath.startsWith("/api")) {
+      parsed.searchParams.delete("path");
+      const rest = parsed.searchParams.toString();
+      req.url = queryPath + (rest ? `?${rest}` : "");
+    } else if (matchedPath && matchedPath.startsWith("/api")) {
+      parsed.searchParams.delete("path");
+      const rest = parsed.searchParams.toString();
+      req.url = matchedPath + (rest ? `?${rest}` : "");
+    } else if (req.query && req.query.slug) {
+      const slugPath = Array.isArray(req.query.slug) ? req.query.slug.join("/") : req.query.slug;
+      delete req.query.slug;
+      parsed.searchParams.delete("slug");
+      const rest = parsed.searchParams.toString();
+      req.url = `/api/${slugPath}` + (rest ? `?${rest}` : "");
+    } else if (req.url.startsWith("/api/index.js") || req.url.startsWith("/api/index")) {
+      req.url = req.url.replace(/^\/api\/index(\.js)?/, "/api") || "/api";
+    }
+  } catch (e) {
+    // ignore
+  }
+  next();
+});
+
+app.use(cors({
+  origin: true,
+  credentials: true
+}));
+app.options("*", cors({ origin: true, credentials: true }));
 app.use(cookieParser());
 app.use(express.json({ limit: "25mb" }));
 app.use(express.urlencoded({ extended: true, limit: "25mb" }));
